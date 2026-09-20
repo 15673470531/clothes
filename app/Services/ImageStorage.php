@@ -58,7 +58,9 @@ class ImageStorage
 
             return [
                 'path'   => $path,
-                'url'    => Storage::disk('public')->url($path),
+                // 按「当前请求的域名」拼，不用 APP_URL（线上 .env 里 APP_URL 常是 localhost，
+                // 那样回给手机的就是 http://localhost/... ，手机上必然加载不出图）
+                'url'    => $this->baseUrl() . '/storage/' . ltrim($path, '/'),
                 'driver' => 'local',
             ];
         }
@@ -73,6 +75,45 @@ class ImageStorage
         }
 
         return ['path' => $key, 'url' => $this->url($key), 'driver' => 'oss'];
+    }
+
+    /**
+     * 出参用：把「库里的图片地址」规范化成「当前请求域名下的地址」
+     *
+     *  - 本地兜底盘的图（.../storage/xxx）：主机名重写成当前请求的域名
+     *    （历史数据里存的是 APP_URL=localhost 那种地址，这里统一纠回来，不用改库）
+     *  - OSS 的图：地址本身就是绝对的（跟域名无关），原样返回
+     */
+    public function out(?string $url): string
+    {
+        $url = trim((string) $url);
+        if ($url === '') {
+            return '';
+        }
+
+        $marker = '/storage/';
+        $pos = strpos($url, $marker);
+        if ($pos === false) {
+            return $url;
+        }
+
+        return $this->baseUrl() . $marker . ltrim(substr($url, $pos + strlen($marker)), '/');
+    }
+
+    /**
+     * 当前请求的 scheme://host（没有请求上下文时退回 APP_URL，比如 artisan / 队列里）
+     * 走反代时以 X-Forwarded-Proto 为准，避免 https 站点被拼成 http
+     */
+    private function baseUrl(): string
+    {
+        $r = request();
+        if (!$r) {
+            return rtrim((string) config('app.url'), '/');
+        }
+
+        $scheme = $r->header('X-Forwarded-Proto') ?: $r->getScheme();
+
+        return $scheme . '://' . $r->getHttpHost();
     }
 
     /**

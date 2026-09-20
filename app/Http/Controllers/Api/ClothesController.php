@@ -255,7 +255,7 @@ class ClothesController extends Controller
             'colors'    => $i->colors ?: [],
             'seasons'   => $i->seasons ?: [],
             'occasions' => $i->occasions ?: [],
-            'imageUrl'  => (string) $i->image_url,
+            'imageUrl'  => $this->storage->out($i->image_url),
             'createdAt' => (int) $i->client_created_at,
         ];
     }
@@ -269,7 +269,7 @@ class ClothesController extends Controller
             'occasions'  => $o->occasions ?: [],
             'itemIds'    => $o->item_ids ?: [],
             'slots'      => $o->slots ?: [],
-            'coverUrl'   => (string) $o->cover_url,
+            'coverUrl'   => $this->storage->out($o->cover_url),
             'createdAt'  => (int) $o->client_created_at,
         ];
     }

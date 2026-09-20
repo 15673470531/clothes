@@ -144,7 +144,7 @@ class UserController extends Controller
             'openid'    => $user->openid,
             'nickName'  => $user->nickname ?? $user->name,
             'name'      => $user->name,
-            'avatarUrl' => $user->avatar_url,
+            'avatarUrl' => $this->storage->out($user->avatar_url),
             'isAdmin'   => $user->is_admin,
             'userId'    => $user->id,
             'phone'     => $this->getPhoneDisplay($user),
@@ -166,7 +166,7 @@ class UserController extends Controller
                 'openid'    => $user->openid,
                 'nickName'  => $user->nickname ?? $user->name,
                 'name'      => $user->name,
-                'avatarUrl' => $user->avatar_url,
+                'avatarUrl' => $this->storage->out($user->avatar_url),
                 'isAdmin'   => $user->is_admin,
                 'userId'    => $user->id,
                 'phone'     => $this->getPhoneDisplay($user),
@@ -208,7 +208,7 @@ class UserController extends Controller
         return response()->json([
             'code' => 0,
             'msg'  => '头像已更新',
-            'data' => ['avatarUrl' => $out['url']],
+            'data' => ['avatarUrl' => $this->storage->out($out['url'])],
         ]);
     }
 

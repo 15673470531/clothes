@@ -20,6 +20,7 @@ use Illuminate\Support\Facades\Route;
 // 登录不需要 token
 Route::post('user/login', [UserController::class, 'login']);
 
+
 // 以下接口需要 Bearer Token
 Route::middleware('auth:sanctum')->group(function () {
 
