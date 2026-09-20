@@ -1,0 +1,49 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: clothes-app
+    restart: unless-stopped
+    working_dir: /var/www/html
+    volumes:
+      - .:/var/www/html
+      - ./docker/php/pool.conf:/usr/local/etc/php-fpm.d/zz-pool.conf
+      # 图片上传限制（upload_max_filesize 等）：PHP 默认 2M，手机照片会被拒
+      - ./docker/php/uploads.ini:/usr/local/etc/php/conf.d/zz-uploads.ini
+    networks:
+      - clothes-network
+    environment:
+      - DB_CONNECTION=mysql
+      - DB_HOST=172.17.0.1
+      - DB_PORT=3306
+      - DB_DATABASE=clothes
+      - DB_USERNAME=clothes
+      - DB_PASSWORD=clothes_pass
+
+  nginx:
+    image: nginx:alpine
+    container_name: clothes-nginx
+    restart: unless-stopped
+    ports:
+      - "8090:80"
+      - "9443:443"
+    volumes:
+      - .:/var/www/html
+      - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf
+      - ./docker/ssl:/etc/nginx/ssl
+    networks:
+      - clothes-network
+    depends_on:
+      - app
+  adminer:
+    image: adminer
+    restart: always
+    ports:
+      - 18090:8080
+    networks:
+      - clothes-network
+
+networks:
+  clothes-network:
+    driver: bridge

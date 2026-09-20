@@ -1,0 +1,327 @@
+<?php
+
+namespace App\Http\Controllers\Api;
+
+use App\Http\Controllers\Controller;
+use App\Models\User;
+use App\Services\ImageStorage;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Schema;
+
+/**
+ * 用户中心：微信小程序登录 + 用户信息
+ *
+ * 约定：
+ *  - 微信 appid / secret 全部走 .env（WECHAT_APPID / WECHAT_APPSECRET），不要写死在代码里
+ *  - 本地开发用 code = dev_xxx 直接登录，跳过微信校验
+ *  - 统一响应格式 {"code":0,"msg":"success","data":...}
+ */
+class UserController extends Controller
+{
+    /** 图片存储（配了 OSS 走 OSS，没配落本地 public 盘）—— 头像上传用 */
+    public function __construct(private readonly ImageStorage $storage)
+    {
+    }
+
+    /**
+     * POST /api/user/login
+     * 微信登录：用 code 换 openid，不存在则创建用户，返回 Sanctum Token
+     */
+    public function login(Request $request)
+    {
+        $code = $request->input('code');
+        $nickName = $request->input('nickName', '');
+        $avatarUrl = $request->input('avatarUrl', '');
+
+        if (!$code) {
+            return response()->json(['code' => 1, 'msg' => '缺少 code 参数']);
+        }
+
+        // 本地开发模式：code 以 dev_ 开头则跳过微信验证
+        if (app()->environment('local') && str_starts_with($code, 'dev_')) {
+            return $this->devLogin($request);
+        }
+
+        // 微信 jscode2session 换取 openid
+        $url = 'https://api.weixin.qq.com/sns/jscode2session?' . http_build_query([
+            'appid'      => env('WECHAT_APPID'),
+            'secret'     => env('WECHAT_APPSECRET'),
+            'js_code'    => $code,
+            'grant_type' => 'authorization_code',
+        ]);
+        $res = @json_decode(@file_get_contents($url), true);
+        $openid = $res['openid'] ?? '';
+
+        if (!$openid) {
+            // 本地环境：微信验证失败时自动降级为开发模式
+            if (app()->environment('local')) {
+                return $this->devLogin($request);
+            }
+            $errMsg = $res['errmsg'] ?? '微信登录失败';
+            return response()->json(['code' => 2, 'msg' => $errMsg]);
+        }
+
+        // 查找或创建用户
+        $user = User::where('openid', $openid)->first();
+        if (!$user) {
+            $user = User::create([
+                'openid'     => $openid,
+                'name'       => $nickName ?: '微信用户',
+                'nickname'   => $nickName ?: null,
+                'avatar_url' => $avatarUrl ?: null,
+                'email'      => $openid . '@wechat',
+                'password'   => Hash::make($openid),
+            ]);
+        } else {
+            // 老用户：昵称/头像给了就更新（分开判断 —— 只换了头像没带昵称时也要存下来）
+            $dirty = [];
+            if ($nickName) {
+                $dirty['nickname'] = $nickName;
+            }
+            if ($avatarUrl) {
+                $dirty['avatar_url'] = $avatarUrl;
+            }
+            if ($dirty) {
+                $user->update($dirty);
+            }
+        }
+
+        return response()->json([
+            'code' => 0,
+            'msg'  => '登录成功',
+            'data' => $this->loginPayload($user, $request),
+        ]);
+    }
+
+    /**
+     * 本地开发用登录：跳过微信验证，openid = dev_ + code 的 md5
+     */
+    private function devLogin(Request $request)
+    {
+        $code = $request->input('code');          // e.g. dev_001, dev_002
+        $nickName = $request->input('nickName', '开发用户');
+        $avatarUrl = $request->input('avatarUrl', '');
+
+        $openid = 'dev_' . md5($code);
+
+        $user = User::where('openid', $openid)->first();
+        if (!$user) {
+            $user = User::create([
+                'openid'     => $openid,
+                'name'       => $nickName ?: '开发用户',
+                'nickname'   => $nickName ?: null,
+                'avatar_url' => $avatarUrl ?: null,
+                'email'      => $openid . '@dev',
+                'password'   => Hash::make($openid),
+            ]);
+        }
+
+        return response()->json([
+            'code' => 0,
+            'msg'  => '登录成功（开发模式）',
+            'data' => $this->loginPayload($user, $request),
+        ]);
+    }
+
+    /**
+     * 登录返回体（正式 / 开发模式共用）
+     */
+    private function loginPayload(User $user, Request $request): array
+    {
+        // 记录最后登录时间（兼容字段尚未迁移的环境）
+        if (Schema::hasColumn('users', 'last_login_at')) {
+            $user->update(['last_login_at' => now()]);
+        }
+
+        // 删除旧 token，生成新 token（一个端只保留一个有效 token）
+        $user->tokens()->delete();
+        $token = $user->createToken('wechat-miniprogram')->plainTextToken;
+
+        return [
+            'token'     => $token,
+            'openid'    => $user->openid,
+            'nickName'  => $user->nickname ?? $user->name,
+            'name'      => $user->name,
+            'avatarUrl' => $user->avatar_url,
+            'isAdmin'   => $user->is_admin,
+            'userId'    => $user->id,
+            'phone'     => $this->getPhoneDisplay($user),
+        ];
+    }
+
+    /**
+     * GET /api/user/info
+     * 获取当前登录用户信息
+     */
+    public function info(Request $request)
+    {
+        $user = $request->user();
+
+        return response()->json([
+            'code' => 0,
+            'msg'  => 'success',
+            'data' => [
+                'openid'    => $user->openid,
+                'nickName'  => $user->nickname ?? $user->name,
+                'name'      => $user->name,
+                'avatarUrl' => $user->avatar_url,
+                'isAdmin'   => $user->is_admin,
+                'userId'    => $user->id,
+                'phone'     => $this->getPhoneDisplay($user),
+                'createdAt' => $user->created_at->format('Y-m-d H:i:s'),
+            ],
+        ]);
+    }
+
+    /**
+     * POST /api/user/avatar
+     * 头像上传：chooseAvatar 拿到的是**临时文件**（重开小程序就没了），必须传到后端存成正式地址
+     * 返回 avatarUrl（可直接给 <image src> 用）
+     *
+     * 存储走 App\Services\ImageStorage：配了 OSS 就进 OSS，没配落本地 public 盘（跟衣物照片同一套）
+     */
+    public function uploadAvatar(Request $request)
+    {
+        $request->validate([
+            'file' => 'required|file|image|max:5120',
+        ], [
+            'file.required' => '没有收到头像文件',
+            'file.image'    => '头像必须是图片',
+            'file.max'      => '头像不能超过 5MB',
+        ]);
+
+        $user = $request->user();
+        $old = $user->avatar_url;
+
+        $out = $this->storage->put($request->file('file'), 'avatar/' . $user->id);
+
+        $user->avatar_url = $out['url'];
+        $user->save();
+
+        // 旧头像顺手删掉，别在存储上堆垃圾（本地的 / OSS 的都认）
+        if ($old && $old !== $out['url']) {
+            $this->storage->deleteByUrl($old);
+        }
+
+        return response()->json([
+            'code' => 0,
+            'msg'  => '头像已更新',
+            'data' => ['avatarUrl' => $out['url']],
+        ]);
+    }
+
+    /**
+     * POST /api/user/update-name
+     * 修改用户昵称（显示名，小程序「我的」页用 input type="nickname" 让用户自己填）
+     */
+    public function updateName(Request $request)
+    {
+        $validated = $request->validate([
+            'name' => 'required|string|max:50',
+        ]);
+
+        // 昵称同时写 nickname（微信昵称口径）与 name（显示名），列表页/后台都看得到
+        $request->user()->update(['nickname' => $validated['name']]);
+
+        $user = $request->user();
+        $user->name = $validated['name'];
+        $user->save();
+
+        return response()->json([
+            'code' => 0,
+            'msg'  => '昵称更新成功',
+            'data' => ['name' => $user->name],
+        ]);
+    }
+
+    /**
+     * POST /api/user/bind-phone
+     * 微信授权获取手机号，绑定到当前用户
+     */
+    public function bindPhone(Request $request)
+    {
+        $user = $request->user();
+        $code = $request->input('code');
+
+        if (!$code) {
+            return response()->json(['code' => 1, 'msg' => '缺少 code 参数']);
+        }
+
+        // 本地环境：模拟绑定，方便前端联调
+        if (app()->environment('local')) {
+            $phone = '138' . str_pad(mt_rand(0, 99999999), 8, '0', STR_PAD_LEFT);
+            if (Schema::hasColumn('users', 'phone')) {
+                $user->phone = $phone;
+                $user->save();
+            }
+            return response()->json([
+                'code' => 0,
+                'msg'  => '绑定成功（开发模式）',
+                'data' => ['phone' => substr($phone, 0, 3) . '****' . substr($phone, -4)],
+            ]);
+        }
+
+        // 生产环境：调用微信接口
+        $accessToken = $this->getWechatAccessToken();
+        if (!$accessToken) {
+            return response()->json(['code' => 2, 'msg' => '获取微信凭证失败，请稍后重试']);
+        }
+
+        $res = Http::post("https://api.weixin.qq.com/wxa/business/getuserphonenumber?access_token={$accessToken}", [
+            'code' => $code,
+        ])->json();
+
+        if (empty($res['errcode']) && !empty($res['phone_info']['phoneNumber'])) {
+            $phone = $res['phone_info']['phoneNumber'];
+            if (Schema::hasColumn('users', 'phone')) {
+                $user->phone = $phone;
+                $user->save();
+            }
+            return response()->json([
+                'code' => 0,
+                'msg'  => '绑定成功',
+                'data' => ['phone' => substr($phone, 0, 3) . '****' . substr($phone, -4)],
+            ]);
+        }
+
+        return response()->json([
+            'code' => 3,
+            'msg'  => '获取手机号失败：' . ($res['errmsg'] ?? '未知错误'),
+        ]);
+    }
+
+    /**
+     * POST /api/user/logout
+     * 退出登录，清除当前 token
+     */
+    public function logout(Request $request)
+    {
+        $request->user()->currentAccessToken()->delete();
+
+        return response()->json([
+            'code' => 0,
+            'msg'  => '退出成功',
+        ]);
+    }
+
+    /**
+     * 获取微信 access_token（缓存 110 分钟，避免超过 2 小时有效期）
+     */
+    private function getWechatAccessToken(): ?string
+    {
+        return \App\Services\WechatService::accessToken();
+    }
+
+    /**
+     * 脱敏显示手机号，兼容字段尚未迁移的环境
+     */
+    private function getPhoneDisplay($user): ?string
+    {
+        if (!Schema::hasColumn('users', 'phone') || !$user->phone) {
+            return null;
+        }
+        return substr($user->phone, 0, 3) . '****' . substr($user->phone, -4);
+    }
+}
