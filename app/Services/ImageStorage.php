@@ -139,6 +139,17 @@ class ImageStorage
     }
 
     /**
+     * URL → 存储驱动（'oss' | 'local'；空地址返回空串）
+     *
+     * 出参给小程序挂牌「照片存哪了」用：配了 OSS 的图是 oss，没配时落服务器本地盘的是 local。
+     * 判定复用 keyFromUrl（认 /storage/ 前缀和 OSS 域名），不用再写一套。
+     */
+    public function driverOf(?string $url): string
+    {
+        return $this->keyFromUrl($url)['driver'] ?? '';
+    }
+
+    /**
      * 对象键 → 可访问 URL（配了自定义域名/CDN 就用它）
      *
      * 两种写法都容忍：

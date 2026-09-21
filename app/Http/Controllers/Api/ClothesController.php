@@ -256,6 +256,8 @@ class ClothesController extends Controller
             'seasons'   => $i->seasons ?: [],
             'occasions' => $i->occasions ?: [],
             'imageUrl'  => $this->storage->out($i->image_url),
+            // 这张图存在哪：oss = 对象存储，local = 服务器本地盘（小程序格子右下角挂牌用）
+            'imageStorage' => $this->storage->driverOf($i->image_url),
             'createdAt' => (int) $i->client_created_at,
         ];
     }
@@ -270,6 +272,7 @@ class ClothesController extends Controller
             'itemIds'    => $o->item_ids ?: [],
             'slots'      => $o->slots ?: [],
             'coverUrl'   => $this->storage->out($o->cover_url),
+            'coverStorage' => $this->storage->driverOf($o->cover_url),
             'createdAt'  => (int) $o->client_created_at,
         ];
     }
