@@ -40,7 +40,14 @@ class UserController extends Controller
         }
 
         // 本地开发模式：code 以 dev_ 开头则跳过微信验证
-        if (app()->environment('local') && str_starts_with($code, 'dev_')) {
+        // ⚠️ 必须显式打开 ALLOW_DEV_LOGIN=true 才生效（见 devLoginAllowed）：
+        //    devLogin 是「openid = dev_ + md5(code)」建号的，而真机的 wx.login code 每次都变，
+        //    线上万一 APP_ENV 配成 local，就会变成「每登一次多一个用户」（2026-09 踩过）
+        if (str_starts_with($code, 'dev_')) {
+            if (! $this->devLoginAllowed()) {
+                return response()->json(['code' => 2, 'msg' => '开发模式登录已关闭']);
+            }
+
             return $this->devLogin($request);
         }
 
@@ -55,8 +62,8 @@ class UserController extends Controller
         $openid = $res['openid'] ?? '';
 
         if (!$openid) {
-            // 本地环境：微信验证失败时自动降级为开发模式
-            if (app()->environment('local')) {
+            // 本地开发：微信验证失败时降级为开发模式（同样要显式开关；线上绝不允许）
+            if ($this->devLoginAllowed()) {
                 return $this->devLogin($request);
             }
             $errMsg = $res['errmsg'] ?? '微信登录失败';
@@ -93,6 +100,26 @@ class UserController extends Controller
             'msg'  => '登录成功',
             'data' => $this->loginPayload($user, $request),
         ]);
+    }
+
+    /**
+     * 是否允许「开发模式登录」（跳过微信换 openid，直接用 dev_ 开头的 code 建号）
+     *
+     * 两个条件都要满足才放行：
+     *  1. 环境是 local
+     *  2. 显式打开 ALLOW_DEV_LOGIN=true（写进 .env；默认关）
+     *
+     * 为什么这么严：devLogin 的 openid 是「dev_ + md5(code)」，而**真机的 wx.login code 每次都变**，
+     * 一旦线上被误判成 local（2026-09 就是这么炸的），真机每登一次就新建一个用户，
+     * 数据散在一堆号里。加了这道开关，即使 APP_ENV 又配错，也只会「登录失败」而不是偷偷建号。
+     */
+    private function devLoginAllowed(): bool
+    {
+        if (! app()->environment('local')) {
+            return false;
+        }
+
+        return (bool) config('app.allow_dev_login', false);
     }
 
     /**
