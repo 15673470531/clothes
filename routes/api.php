@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\Api\FeedbackController;
+use App\Http\Controllers\Api\AdminController;
 use App\Http\Controllers\Api\UploadController;
 use App\Http\Controllers\Api\UserController;
 use App\Http\Controllers\Api\ClothesController;
@@ -41,6 +42,13 @@ Route::middleware('auth:sanctum')->group(function () {
     // 只有两个接口：拉全量 + 批量推（小程序自己攒「待推队列」，弱网下一次推完）
     Route::get('clothes/sync',      [ClothesController::class, 'pull']);
     Route::post('clothes/sync',     [ClothesController::class, 'push']);
+
+    // 管理端（只有 is_admin 能用；入口在小程序「我的」页，仅管理员可见）
+    // 校验在 AdminController::authorizeAdmin，非管理员 403
+    Route::prefix('admin')->group(function () {
+        Route::get('stats', [AdminController::class, 'stats']);   // 统计卡片（口径全在后端）
+        Route::get('users', [AdminController::class, 'users']);  // 用户列表（搜索/筛选/排序/分页）
+    });
 
     // 业务模块接口按模块分组加在这里，例如：
     // Route::get('xxx/list',   [XxxController::class, 'index']);
