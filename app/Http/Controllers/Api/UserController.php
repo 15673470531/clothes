@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\User;
 use App\Services\ImageStorage;
+use App\Services\Quota;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
@@ -199,6 +200,23 @@ class UserController extends Controller
                 'phone'     => $this->getPhoneDisplay($user),
                 'createdAt' => $user->created_at->format('Y-m-d H:i:s'),
             ],
+        ]);
+    }
+
+    /**
+     * GET /api/user/quota
+     * 额度用量（「我的」页显示「还能录 128 件 · 今天还能录 45 件」）
+     * 数值是用户表上的余额（users.item_quota / users.daily_quota）
+     *
+     * 前端只显示、不判断：真正扣额度的是 ClothesController::push（事务里锁行扣），
+     * 改前端绕不过去。
+     */
+    public function quota(Request $request, Quota $quota)
+    {
+        return response()->json([
+            'code' => 0,
+            'msg'  => 'success',
+            'data' => $quota->summary($request->user()),
         ]);
     }
 

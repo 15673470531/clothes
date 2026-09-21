@@ -30,6 +30,9 @@ class User extends Authenticatable
         'is_admin',
         'last_login_at',
         'last_active_at',
+        'item_quota',
+        'daily_quota',
+        'daily_reset_date',
     ];
 
     /**
@@ -69,6 +72,9 @@ class User extends Authenticatable
             'is_admin' => 'boolean',
             'last_login_at' => 'datetime',
             'last_active_at' => 'datetime',
+            'item_quota' => 'integer',
+            'daily_quota' => 'integer',
+            'daily_reset_date' => 'date',
         ];
     }
 }

@@ -27,6 +27,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // 用户信息
     Route::get('user/info',         [UserController::class, 'info']);
+    Route::get('user/quota',        [UserController::class, 'quota']);   // 免费额度用量
     Route::post('user/update-name', [UserController::class, 'updateName']);
     Route::post('user/avatar',      [UserController::class, 'uploadAvatar']);   // 头像上传（multipart）
     Route::post('user/bind-phone',  [UserController::class, 'bindPhone']);
@@ -48,6 +49,9 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::prefix('admin')->group(function () {
         Route::get('stats', [AdminController::class, 'stats']);   // 统计卡片（口径全在后端）
         Route::get('users', [AdminController::class, 'users']);  // 用户列表（搜索/筛选/排序/分页）
+        // 下钻：点名单里某个人的「N 件衣物 / N 套搭配」看他的具体内容（只读）
+        Route::get('users/{id}/items',   [AdminController::class, 'userItems']);
+        Route::get('users/{id}/outfits', [AdminController::class, 'userOutfits']);
     });
 
     // 业务模块接口按模块分组加在这里，例如：

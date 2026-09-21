@@ -11,8 +11,9 @@ use Illuminate\Support\Facades\Schedule;
 | 本地查看已注册任务：docker compose exec app php artisan schedule:list
 | 手动执行单个任务：  docker compose exec app php artisan <命令名>
 |
-| 示例（按需放开）：
-| Schedule::command('xxx:sync')->dailyAt('08:00');
-| Schedule::call(fn () => \Illuminate\Support\Facades\Log::info('heartbeat'))->hourly();
-|
 */
+
+// 每天 00:05 把「今日可录件数」重置回 50（额度是用户表上的余额，不重置第二天就是 0）
+// 手动跑：docker compose exec app php artisan quota:reset-daily
+// 只看会重置多少人：docker compose exec app php artisan quota:reset-daily --dry-run
+Schedule::command('quota:reset-daily')->dailyAt('00:05');

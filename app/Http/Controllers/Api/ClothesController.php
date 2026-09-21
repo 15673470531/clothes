@@ -6,7 +6,10 @@ use App\Http\Controllers\Controller;
 use App\Models\ClothesItem;
 use App\Models\ClothesOutfit;
 use App\Models\ClothesWearLog;
+use App\Models\User;
+use App\Exceptions\QuotaExceededException;
 use App\Services\ImageStorage;
+use App\Services\Quota;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -27,7 +30,10 @@ use Illuminate\Support\Facades\Log;
  */
 class ClothesController extends Controller
 {
-    public function __construct(private readonly ImageStorage $storage) {}
+    public function __construct(
+        private readonly ImageStorage $storage,
+        private readonly Quota $quota,
+    ) {}
 
     /**
      * GET /api/clothes/sync
@@ -102,35 +108,44 @@ class ClothesController extends Controller
         $counts = ['items' => 0, 'outfits' => 0, 'wears' => 0, 'deletedItems' => 0, 'deletedOutfits' => 0];
         $staleUrls = [];   // 事务提交后再删的 OSS 对象
 
-        DB::transaction(function () use ($data, $uid, &$counts, &$staleUrls) {
-            foreach ($data['items'] ?? [] as $row) {
-                $staleUrls = array_merge($staleUrls, $this->upsertItem($uid, $row));
-                $counts['items']++;
-            }
+        // 额度（用户表上的余额）在事务里扣：先锁住用户行再读余额，
+        // 免得同一秒两批请求都读到「还剩 1 件」然后各扣一次
+        try {
+            DB::transaction(function () use ($data, $uid, &$counts, &$staleUrls) {
+                $this->consumeQuota($uid, array_column($data['items'] ?? [], 'id'));
 
-            foreach ($data['outfits'] ?? [] as $row) {
-                $staleUrls = array_merge($staleUrls, $this->upsertOutfit($uid, $row));
-                $counts['outfits']++;
-            }
-
-            foreach ($data['wears'] ?? [] as $date => $outfitId) {
-                if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', (string) $date)) {
-                    continue;
+                foreach ($data['items'] ?? [] as $row) {
+                    $staleUrls = array_merge($staleUrls, $this->upsertItem($uid, $row));
+                    $counts['items']++;
                 }
-                $this->putWear($uid, (string) $date, (string) $outfitId);
-                $counts['wears']++;
-            }
 
-            foreach ($data['deleted']['items'] ?? [] as $cid) {
-                $staleUrls = array_merge($staleUrls, $this->deleteItem($uid, (string) $cid));
-                $counts['deletedItems']++;
-            }
+                foreach ($data['outfits'] ?? [] as $row) {
+                    $staleUrls = array_merge($staleUrls, $this->upsertOutfit($uid, $row));
+                    $counts['outfits']++;
+                }
 
-            foreach ($data['deleted']['outfits'] ?? [] as $cid) {
-                $staleUrls = array_merge($staleUrls, $this->deleteOutfit($uid, (string) $cid));
-                $counts['deletedOutfits']++;
-            }
-        });
+                foreach ($data['wears'] ?? [] as $date => $outfitId) {
+                    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', (string) $date)) {
+                        continue;
+                    }
+                    $this->putWear($uid, (string) $date, (string) $outfitId);
+                    $counts['wears']++;
+                }
+
+                foreach ($data['deleted']['items'] ?? [] as $cid) {
+                    $staleUrls = array_merge($staleUrls, $this->deleteItem($uid, (string) $cid));
+                    $counts['deletedItems']++;
+                }
+
+                foreach ($data['deleted']['outfits'] ?? [] as $cid) {
+                    $staleUrls = array_merge($staleUrls, $this->deleteOutfit($uid, (string) $cid));
+                    $counts['deletedOutfits']++;
+                }
+            });
+        } catch (QuotaExceededException $e) {
+            // 额度不够：整个请求不写库（不做「半个批次」），小程序会弹对应提示
+            return response()->json(['code' => $e->apiCode(), 'msg' => $e->getMessage(), 'data' => null]);
+        }
 
         foreach (array_unique($staleUrls) as $url) {
             $this->storage->deleteByUrl($url);
@@ -140,6 +155,28 @@ class ClothesController extends Controller
     }
 
     // ===== 内部 =====
+
+    /**
+     * 扣额度：按这批里**新的**条数扣（编辑已有衣物不扣）
+     *
+     * 必须在事务里、并且已经锁住用户行（lockForUpdate）——否则同一秒两批请求会各扣一次。
+     * 余额不够就抛 QuotaExceededException，由 push() 转成 {code:4001/4002, msg}。
+     */
+    private function consumeQuota(int $uid, array $clientIds): void
+    {
+        if (!$clientIds) {
+            return;
+        }
+
+        $user = User::query()->lockForUpdate()->find($uid);
+        if (!$user) {
+            return;
+        }
+
+        $existing = ClothesItem::where('user_id', $uid)->pluck('client_id')->all();
+        $newCount = count(array_diff(array_unique($clientIds), $existing));
+        $this->quota->consume($user, $newCount);
+    }
 
     /**
      * 写一条衣物（按 user_id + client_id upsert）

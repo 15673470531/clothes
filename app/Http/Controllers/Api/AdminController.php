@@ -7,6 +7,7 @@ use App\Models\ClothesItem;
 use App\Models\ClothesOutfit;
 use App\Models\ClothesWearLog;
 use App\Models\User;
+use App\Services\ImageStorage;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -224,6 +225,135 @@ class AdminController extends Controller
         ]);
     }
 
+    /**
+     * GET /api/admin/users/{id}/items
+     * 某个人录的衣物 —— 用户名单里点「N 件衣物」进来
+     *
+     * 只读接口：管理员看的是别人的数据，只查不写，所以没有编辑/删除。
+     * 条数口径跟名单上的「N 件衣物」完全一致：软删的不算（SoftDeletes 全局作用域自动排除），
+     * 所以点进来看到的条数一定跟卡片上的数字对得上。
+     */
+    public function userItems(Request $request, int $id): JsonResponse
+    {
+        $this->authorizeAdmin($request);
+
+        $user = User::find($id);
+        if (!$user) {
+            return $this->fail('这个用户不在了');
+        }
+
+        $perPage = min(max((int) $request->input('per_page', 30), 1), 100);
+        $items   = ClothesItem::where('user_id', $id)
+            ->orderByDesc('client_created_at')->orderByDesc('id')   // 跟小程序里的顺序一致
+            ->paginate($perPage);
+
+        $storage = app(ImageStorage::class);
+
+        return $this->ok([
+            'user'        => $this->userBrief($user),
+            'list'        => collect($items->items())->map(fn (ClothesItem $i) => [
+                'id'           => $i->client_id,
+                'name'         => (string) $i->name,
+                'category'     => (string) $i->category,
+                'sub'          => (string) $i->sub,
+                'colors'       => $i->colors ?: [],
+                'seasons'      => $i->seasons ?: [],
+                'occasions'    => $i->occasions ?: [],
+                'imageUrl'     => $storage->out($i->image_url),
+                // 照片存在哪（oss / local）：跟衣橱格子右下角那颗小圆点同一套口径
+                'imageStorage' => $storage->driverOf($i->image_url),
+                'createdAt'    => $this->listDate($i->client_created_at, $i->created_at),
+            ])->values(),
+            'total'       => $items->total(),
+            'currentPage' => $items->currentPage(),
+            'lastPage'    => $items->lastPage(),
+        ]);
+    }
+
+    /**
+     * GET /api/admin/users/{id}/outfits
+     * 某个人建的搭配 —— 用户名单里点「N 套搭配」进来
+     *
+     * 只读接口（同上）。除了搭配本身，还带上「这套里有几件、缺几件」——
+     * 缺 = 搭配引用的衣物已经被删了，跟穿搭列表卡片上的「缺N」是同一个口径；
+     * 没生成封面的搭配再带一件衣物当缩略，前端据此兜底，不留空白格子。
+     */
+    public function userOutfits(Request $request, int $id): JsonResponse
+    {
+        $this->authorizeAdmin($request);
+
+        $user = User::find($id);
+        if (!$user) {
+            return $this->fail('这个用户不在了');
+        }
+
+        $perPage = min(max((int) $request->input('per_page', 30), 1), 100);
+        $outfits = ClothesOutfit::where('user_id', $id)
+            ->orderByDesc('client_created_at')->orderByDesc('id')
+            ->paginate($perPage);
+
+        // 一次把这页搭配用到的衣物查出来：算件数/缺几件、挑没封面时的缩略
+        $ids   = collect($outfits->items())->pluck('item_ids')->flatten()->filter()->unique()->values();
+        $items = ClothesItem::where('user_id', $id)->whereIn('client_id', $ids)->get()->keyBy('client_id');
+        $storage = app(ImageStorage::class);
+
+        return $this->ok([
+            'user'        => $this->userBrief($user),
+            'list'        => collect($outfits->items())->map(function (ClothesOutfit $o) use ($items, $storage) {
+                $ids     = $o->item_ids ?: [];
+                $alive   = collect($ids)->filter(fn ($cid) => $items->has($cid));
+                $thumbAt = $alive->first() ? $items->get($alive->first()) : null;
+
+                return [
+                    'id'           => $o->client_id,
+                    'name'         => (string) $o->name,
+                    'occasions'    => $o->occasions ?: [],
+                    'count'        => $alive->count(),
+                    'missing'      => count($ids) - $alive->count(),
+                    'coverUrl'     => $storage->out($o->cover_url),
+                    'coverStorage' => $storage->driverOf($o->cover_url),
+                    // 没封面时前端拿它顶一格（有照片用照片，没有用品类图标 + 颜色块）
+                    'thumb'        => $thumbAt ? [
+                        'imageUrl'     => $storage->out($thumbAt->image_url),
+                        'imageStorage' => $storage->driverOf($thumbAt->image_url),
+                        'category'     => (string) $thumbAt->category,
+                        'colors'       => $thumbAt->colors ?: [],
+                    ] : null,
+                    'createdAt'    => $this->listDate($o->client_created_at, $o->created_at),
+                ];
+            })->values(),
+            'total'       => $outfits->total(),
+            'currentPage' => $outfits->currentPage(),
+            'lastPage'    => $outfits->lastPage(),
+        ]);
+    }
+
+    /** 用户头像那一行要用的简要信息（下钻页顶部「看的是谁」） */
+    private function userBrief(User $u): array
+    {
+        return [
+            'id'        => $u->id,
+            'name'      => (string) $u->name,
+            'nickname'  => (string) $u->nickname,
+            'avatarUrl' => (string) $u->avatar_url,
+            'isAdmin'   => (bool) $u->is_admin,
+        ];
+    }
+
+    /**
+     * 列表上显示的日期：优先用小程序那边的录入时间（client_created_at，毫秒），
+     * 没有（老数据 / 迁移来的）才退回入库时间，避免显示成 1970
+     */
+    private function listDate($clientTs, ?Carbon $dbTime): string
+    {
+        $ts = (int) $clientTs;
+        if ($ts > 0) {
+            return Carbon::createFromTimestampMs($ts)->format('Y-m-d');
+        }
+
+        return $dbTime ? $dbTime->format('Y-m-d') : '';
+    }
+
     /** 只有管理员能用（入口在小程序里藏了，但拦人必须放后端） */
     private function authorizeAdmin(Request $request): void
     {
@@ -234,5 +364,11 @@ class AdminController extends Controller
     private function ok(array $data): JsonResponse
     {
         return response()->json(['code' => 0, 'msg' => 'success', 'data' => $data]);
+    }
+
+    /** 业务失败（比如用户 id 不存在）：code 非 0，前端按 msg 提示 */
+    private function fail(string $msg, int $code = 404): JsonResponse
+    {
+        return response()->json(['code' => $code, 'msg' => $msg, 'data' => null]);
     }
 }
