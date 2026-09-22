@@ -78,6 +78,43 @@ class ImageStorage
     }
 
     /**
+     * 存一段二进制内容（2026-09 · AI 试穿用）
+     *
+     * 跟 put() 的区别：试穿链路里的图（归一化后的白底图、试穿结果图）是从远程下载的，
+     * 手上没有 UploadedFile，只有二进制。其余口径完全一致：配了 OSS 就进 OSS，
+     * 没配就落本地 public 盘并返回 APP_URL/storage/... 的地址。
+     *
+     * @param  string $contents 图片二进制
+     * @param  string $ext      扩展名（白名单之外一律按 jpg 存）
+     * @param  string $dir      目录（如 tryon），调用方拼好
+     */
+    public function putBinary(string $contents, string $ext, string $dir): array
+    {
+        $dir = trim($dir, '/');
+        $ext = in_array(strtolower($ext), ['jpg', 'jpeg', 'png', 'webp'], true) ? strtolower($ext) : 'jpg';
+        $key = $dir . '/' . date('Ym') . '/' . Str::random(26) . '.' . $ext;
+
+        if (!$this->isOss()) {
+            Storage::disk('public')->put($key, $contents);
+
+            return [
+                'path'   => $key,
+                'url'    => $this->baseUrl() . '/storage/' . ltrim($key, '/'),
+                'driver' => 'local',
+            ];
+        }
+
+        try {
+            $this->client()->putObject(config('services.oss.bucket'), $key, $contents);
+        } catch (OssException $e) {
+            Log::error('[oss] 上传失败', ['key' => $key, 'err' => $e->getMessage()]);
+            throw new RuntimeException('上传到 OSS 失败：' . $e->getMessage(), 0, $e);
+        }
+
+        return ['path' => $key, 'url' => $this->url($key), 'driver' => 'oss'];
+    }
+
+    /**
      * 出参用：把「库里的图片地址」规范化成「当前请求域名下的地址」
      *
      *  - 本地兜底盘的图（.../storage/xxx）：主机名重写成当前请求的域名

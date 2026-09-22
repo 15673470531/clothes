@@ -21,6 +21,34 @@ services:
       - DB_USERNAME=clothes
       - DB_PASSWORD=clothes_pass
 
+  # 队列 worker（2026-09 加 · AI 试穿）
+  # 项目里第一个用到队列的功能：AI 试穿生成要 20~35 秒，不能卡在小程序请求里，
+  # 所以提交后进队列、由这个 worker 处理（数据库驱动，jobs 表已存在）。
+  # ⚠️ 这个容器不跑的话，试穿任务会一直停在 pending（页面一直转圈）。
+  # 代码与 app 共用同一份卷，改了 PHP 代码要重启它：docker compose restart worker
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: clothes-worker
+    restart: unless-stopped
+    working_dir: /var/www/html
+    command: php artisan queue:work --tries=3 --timeout=300 --sleep=2
+    volumes:
+      - .:/var/www/html
+      - ./docker/php/uploads.ini:/usr/local/etc/php/conf.d/zz-uploads.ini
+    networks:
+      - clothes-network
+    depends_on:
+      - app
+    environment:
+      - DB_CONNECTION=mysql
+      - DB_HOST=172.17.0.1
+      - DB_PORT=3306
+      - DB_DATABASE=clothes
+      - DB_USERNAME=clothes
+      - DB_PASSWORD=clothes_pass
+
   nginx:
     image: nginx:alpine
     container_name: clothes-nginx
