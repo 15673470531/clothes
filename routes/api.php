@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\Api\FeedbackController;
 use App\Http\Controllers\Api\AdminController;
+use App\Http\Controllers\Api\TryonController;
 use App\Http\Controllers\Api\UploadController;
 use App\Http\Controllers\Api\UserController;
 use App\Http\Controllers\Api\ClothesController;
@@ -53,6 +54,12 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('users/{id}/items',   [AdminController::class, 'userItems']);
         Route::get('users/{id}/outfits', [AdminController::class, 'userOutfits']);
     });
+
+    // AI 试穿（2026-09 · P2）
+    // 提交与查询分开：生成要 20~35 秒，页面拿 task_id 自己轮询
+    Route::get('tryon/quota', [TryonController::class, 'quota']);   // 入口状态（开关/会员/今天还剩几次）
+    Route::post('tryon',      [TryonController::class, 'store']);   // 提交（命中缓存会秒回）
+    Route::get('tryon/{id}',  [TryonController::class, 'show']);    // 轮询任务
 
     // 业务模块接口按模块分组加在这里，例如：
     // Route::get('xxx/list',   [XxxController::class, 'index']);

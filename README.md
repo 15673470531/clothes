@@ -30,6 +30,9 @@ docker compose exec app php artisan migrate
 
 访问：后台 http://localhost:8090/admin ，phpMyAdmin http://localhost:18091
 
+`worker` 是队列进程（AI 试穿靠它生成，没有端口）。**AI 试穿相关的部署、配置、坑见
+[docs/AI试穿.md](docs/AI试穿.md)**。
+
 ## 四、端口
 
 | 服务 | 端口 |
