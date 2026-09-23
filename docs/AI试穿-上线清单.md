@@ -121,8 +121,9 @@ docker compose exec app php artisan texts:export    # 生成 storage/app/texts.j
 ```ini
 QUOTA_ITEM=100                   # 新用户免费送多少衣架（总数；建号时给一次，改它只影响之后建的新号）
 QUOTA_DAILY=100                  # 每天最多挂几个
-QUOTA_REWARD_CHECKIN=2           # 每日签到送几个
-QUOTA_REWARD_SHARE=10            # 分享好友送几个
+QUOTA_ITEM_MAX=200               # 衣架总数上限：奖励（签到/分享/每月领取）加到这么多就不再累加
+QUOTA_REWARD_CHECKIN=1           # 每日签到送几个
+QUOTA_REWARD_SHARE=2             # 分享给群或好友送几个
 QUOTA_REWARD_NEWCOMER=50         # 新用户每月免费领取（按月 1 次，**要用户点一下领取**；0 = 关掉那一行）
 QUOTA_REWARD_MONTHLY=0           # 每月系统赠送（老口径：自动到账。已被上面取代，0 = 关闭）
 ```

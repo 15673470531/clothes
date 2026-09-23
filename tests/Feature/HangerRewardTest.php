@@ -9,17 +9,19 @@ use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
 
 /**
- * 赚衣架测试（2026-09：每日签到 +2 / 分享好友 +10 / 新用户每月免费领取 +50）
+ * 赚衣架测试（2026-09：每日签到 +1 / 分享群或好友 +2 / 新用户每月免费领取 +50）
  *
  * 背景：「我的」页衣架卡右侧的「获取更多」进的是一个真能干活的页面 ——
- * 每天签到领 2 个衣架、分享给好友领 10 个（每天各 1 次），
+ * 每天签到领 1 个衣架、分享给群或好友领 2 个（每天各 1 次），
  * 另外每月可以自己点一下「领取」拿 50 个（新用户每月免费领取）。
  * 被测：App\Services\HangerReward + HangerRewardController 的几个接口。
  *
  * 口径：
  *   - 奖励**加到总额**（users.item_quota），不动今日额度
- *   - **不受免费总量上限约束**（余额可以超过 config('quota.item_quota')）
- *   - 数字（+2 / +10 / +50 / 每天几次）**只从 config('quota.reward_*') 读**，用例里改配置验证
+ *   - **受衣架总数上限约束**（config('quota.item_max')，200）：到顶就不再累加，
+ *     提示语会说"已到上限"；免费额度 item_quota（100）只是进货量，不是天花板
+ *   - 数字（+1 / +2 / +50 / 每天几次）**只从 config('quota.reward_*') 读**，用例里改配置验证；
+ *     用例断言也一律读配置（改数字不用回来改测试）
  *   - 同一天/同一月同一种奖励领过就 4008，余额不动、流水不重复
  *
  * 注意：用例里把余额和配置都设小，不造真实数据。
@@ -56,7 +58,7 @@ class HangerRewardTest extends TestCase
     /**
      * 场景：进「获取更多」页先问一次状态
      *
-     * 预期：签到/分享都能领、各给几个由后端下发（默认 2 / 10），并带上最新衣架余额
+     * 预期：签到/分享都能领、各给几个由后端下发（默认 2 / 4），并带上最新衣架余额
      */
     public function test_status_reports_today_state(): void
     {
@@ -65,8 +67,8 @@ class HangerRewardTest extends TestCase
         $res = $this->getJson('/api/hanger/reward')->assertOk()->assertJson(['code' => 0]);
 
         $data = $res->json('data');
-        $this->assertSame(2, $data['checkin']['amount'], '签到一次 2 个（来自配置）');
-        $this->assertSame(10, $data['share']['amount'], '分享一次 10 个（来自配置）');
+        $this->assertSame((int) config('quota.reward_checkin'), $data['checkin']['amount'], '签到一次几个（来自配置）');
+        $this->assertSame((int) config('quota.reward_share'), $data['share']['amount'], '分享一次几个（来自配置）');
         $this->assertTrue($data['checkin']['canClaim'], '还没签到 → 能领');
         $this->assertTrue($data['share']['canClaim'], '还没分享 → 能领');
         $this->assertSame(1, $data['checkin']['leftToday'], '每天各 1 次');
@@ -76,18 +78,19 @@ class HangerRewardTest extends TestCase
     /**
      * 场景：每日签到
      *
-     * 预期：总额 +2，**今日额度一个都不动**（奖励是资产，不是当日速率）
+     * 预期：总额加上签到那点衣架，**今日额度一个都不动**（奖励是资产，不是当日速率）
      */
     public function test_checkin_adds_total_and_keeps_daily(): void
     {
+        $checkin = (int) config('quota.reward_checkin');
         $user = $this->userWith(3, 5);
 
         $res = $this->postJson('/api/hanger/checkin')->assertOk()->assertJson(['code' => 0]);
 
         $user->refresh();
-        $this->assertSame(5, $user->item_quota, '签到 +2 加到总额');
+        $this->assertSame(3 + $checkin, $user->item_quota, '签到加到总额：3 + ' . $checkin);
         $this->assertSame(5, $user->daily_quota, '今日额度不受影响');
-        $this->assertSame(5, $res->json('data.hanger.hangerTotal'), '出参直接带最新余额（前端不用再问一次）');
+        $this->assertSame(3 + $checkin, $res->json('data.hanger.hangerTotal'), '出参直接带最新余额（前端不用再问一次）');
         $this->assertFalse($res->json('data.checkin.canClaim'), '领完就领不了了');
         $this->assertSame(1, HangerReward::query()->where('type', 'checkin')->count(), '只记一条流水');
     }
@@ -100,6 +103,7 @@ class HangerRewardTest extends TestCase
     public function test_checkin_twice_is_blocked(): void
     {
         $user = $this->userWith(3);
+        $checkin = (int) config('quota.reward_checkin');
 
         $this->postJson('/api/hanger/checkin')->assertOk()->assertJson(['code' => 0]);
         $this->postJson('/api/hanger/checkin')->assertOk()
@@ -107,33 +111,34 @@ class HangerRewardTest extends TestCase
             ->assertJsonPath('msg', '今天已经签到过了，明天再来');
 
         $user->refresh();
-        $this->assertSame(5, $user->item_quota, '第二次不再加');
+        $this->assertSame(3 + $checkin, $user->item_quota, '第二次不再加');
         $this->assertSame(1, HangerReward::query()->where('type', 'checkin')->count(), '流水不重复');
     }
 
     /**
-     * 场景：分享给好友
+     * 场景：分享群或者好友
      *
-     * 预期：第一次 +10（跟签到互不影响，同一天两个都能领）；第二次 4008
+     * 预期：第一次能领到（跟签到互不影响，同一天两个都能领）；第二次 4008
      */
     public function test_share_adds_hanger_once_a_day(): void
     {
         $user = $this->userWith(3, 5);
 
+        $share = (int) config('quota.reward_share');
         $res = $this->postJson('/api/hanger/share')->assertOk()->assertJson(['code' => 0]);
-        $this->assertSame(13, $res->json('data.hanger.hangerTotal'), '分享 +10');
+        $this->assertSame(3 + $share, $res->json('data.hanger.hangerTotal'), '分享加' . $share . '个');
 
         $this->postJson('/api/hanger/share')->assertOk()->assertJson(['code' => 4008]);
 
         $user->refresh();
-        $this->assertSame(13, $user->item_quota, '重复分享不再加');
+        $this->assertSame(3 + $share, $user->item_quota, '重复分享不再加');
         $this->assertSame(0, HangerReward::query()->where('type', 'checkin')->count(), '分享不会顺带把签到也领了');
     }
 
     /**
      * 场景：同一天签到之后再分享
      *
-     * 预期：两个都能领到（一天最多 2+10=12 个）
+     * 预期：两个都能领到（一天最多 签到 + 分享 两笔）
      */
     public function test_checkin_and_share_are_independent(): void
     {
@@ -142,26 +147,32 @@ class HangerRewardTest extends TestCase
         $this->postJson('/api/hanger/checkin')->assertJson(['code' => 0]);
         $res = $this->postJson('/api/hanger/share')->assertJson(['code' => 0]);
 
-        $this->assertSame(12, $res->json('data.hanger.hangerTotal'), '2 + 10');
+        $this->assertSame(
+            (int) config('quota.reward_checkin') + (int) config('quota.reward_share'),
+            $res->json('data.hanger.hangerTotal'),
+            '签到 + 分享'
+        );
         $user->refresh();
-        $this->assertSame(12, $user->item_quota);
+        $this->assertSame((int) config('quota.reward_checkin') + (int) config('quota.reward_share'), $user->item_quota);
     }
 
     /**
-     * 场景：余额已经到免费上限（500）时还能不能签到
+     * 场景：余额已经到免费额度（config 里的 100）时还能不能签到
      *
-     * 预期：能，余额变成 502 —— 奖励**不受免费总量上限约束**（上限只是"免费进货量"）
+     * 预期：能，余额变成 102 —— 奖励**不受免费总量上限约束**（上限只是"免费进货量"）；
+     *       分母 = 余额 + 已占用，所以也跟着变成 102，不会出现「102 / 100」这种怪数
      */
     public function test_reward_can_exceed_free_limit(): void
     {
         $limit = (int) config('quota.item_quota');
         $user = $this->userWith($limit);
 
+        $checkin = (int) config('quota.reward_checkin');
         $res = $this->postJson('/api/hanger/checkin')->assertOk()->assertJson(['code' => 0]);
 
         $user->refresh();
-        $this->assertSame($limit + 2, $user->item_quota, '超过上限也照加');
-        $this->assertSame($limit + 2, $res->json('data.hanger.hangerTotalLimit'), '分母跟着余额走（不会出现"502 / 500"）');
+        $this->assertSame($limit + $checkin, $user->item_quota, '免费额度不是天花板，照加');
+        $this->assertSame($limit + $checkin, $res->json('data.hanger.hangerTotalLimit'), '分母 = 余额 + 已占用');
     }
 
     /**
@@ -200,7 +211,7 @@ class HangerRewardTest extends TestCase
         $this->postJson('/api/hanger/share')->assertOk()->assertJson(['code' => 4008]);
 
         $user->refresh();
-        $this->assertSame(30, $user->item_quota, '3 次 × 10');
+        $this->assertSame(3 * (int) config('quota.reward_share'), $user->item_quota, '3 次 × 每次几个');
         $this->assertSame(3, HangerReward::query()->where('type', 'share')->count(), '三条流水（seq 1/2/3）');
     }
 
@@ -241,6 +252,7 @@ class HangerRewardTest extends TestCase
      */
     public function test_can_claim_again_next_day(): void
     {
+        $checkin = (int) config('quota.reward_checkin');
         $user = $this->userWith(0);
 
         // 昨天的流水（直接造一条，跳过"今天"的限制）
@@ -249,13 +261,13 @@ class HangerRewardTest extends TestCase
             'type'        => 'checkin',
             'reward_date' => today()->subDay()->toDateString(),
             'seq'         => 1,
-            'amount'      => 2,
+            'amount'      => 2,   // 历史数字，跟现在配置几个无关
         ]);
 
         $this->postJson('/api/hanger/checkin')->assertOk()->assertJson(['code' => 0]);
 
         $user->refresh();
-        $this->assertSame(2, $user->item_quota, '今天照样能领');
+        $this->assertSame($checkin, $user->item_quota, '今天照样能领');
     }
 
     /* ------------------------------------------------------------------
@@ -529,5 +541,68 @@ class HangerRewardTest extends TestCase
     public function test_newcomer_requires_login(): void
     {
         $this->postJson('/api/hanger/newcomer')->assertUnauthorized();
+    }
+
+    /* ------------------------------------------------------------------
+     * 衣架总数上限（config('quota.item_max')，2026-09 用户定：200）
+     * 奖励加到 200 就不再累加；退款（删掉东西还回来）不受它管
+     * ------------------------------------------------------------------ */
+
+    /**
+     * 场景：余额已经顶到上限（200）时又去签到
+     *
+     * 预期：接口照样 code=0、也照样记流水（今天这一次就用掉了），但**余额一个都不加**，
+     *       提示语换成"已到上限"那句 —— 不能骗用户说 +2
+     */
+    public function test_reward_stops_at_total_cap(): void
+    {
+        $max = (int) config('quota.item_max');
+        $user = $this->userWith($max, 10);
+
+        $res = $this->postJson('/api/hanger/checkin')->assertOk()->assertJson(['code' => 0]);
+
+        $user->refresh();
+        $this->assertSame($max, $user->item_quota, '到顶就不加了');
+        $this->assertSame('衣架已经到上限 ' . $max . ' 个了，这次的先不累加', $res->json('data.toast'));
+        $this->assertSame(1, HangerReward::query()->where('type', 'checkin')->count(), '流水照记（今天这条已经用掉了）');
+        $this->assertSame($max, $res->json('data.hanger.hangerTotal'), '出参里的余额也是上限值');
+    }
+
+    /**
+     * 场景：快满时领奖励（余额 197、分享一次 4 个）
+     *
+     * 预期：只加"还装得下的"那部分（+3 到 200），提示语报的是**实际加到的 3** 而不是配置里的 4
+     */
+    public function test_reward_partially_added_when_near_cap(): void
+    {
+        $max = (int) config('quota.item_max');
+        $share = (int) config('quota.reward_share');
+        $user = $this->userWith($max - $share + 1, 10);   // 只差 1 个到顶
+
+        $res = $this->postJson('/api/hanger/share')->assertOk()->assertJson(['code' => 0]);
+
+        $user->refresh();
+        $this->assertSame($max, $user->item_quota, '只装得下 1 个');
+        $this->assertSame('分享成功 +1 个衣架', $res->json('data.toast'), '提示语报实际加到的数');
+    }
+
+    /**
+     * 场景：上限管不管"删掉东西退还"
+     *
+     * 预期：不管 —— 余额顶到 200、挂一件变 199，删掉又回到 200（那是用户自己的东西，不是白赚）
+     */
+    public function test_cap_does_not_block_refund(): void
+    {
+        $max = (int) config('quota.item_max');
+        $user = $this->userWith($max, 10);
+
+        $this->postJson('/api/clothes/sync', ['items' => [
+            ['id' => 'i1', 'name' => '测试衣物', 'category' => 'top', 'sub' => '', 'colors' => [],
+             'seasons' => [], 'occasions' => [], 'imageUrl' => '', 'createdAt' => 1758000000000],
+        ]])->assertJson(['code' => 0]);
+        $this->assertSame($max - 1, $user->refresh()->item_quota, '挂一件占掉 1 个');
+
+        $this->postJson('/api/clothes/sync', ['deleted' => ['items' => ['i1']]])->assertJson(['code' => 0]);
+        $this->assertSame($max, $user->refresh()->item_quota, '删掉还回来，不看上限');
     }
 }

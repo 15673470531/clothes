@@ -68,6 +68,20 @@ class QuotaTest extends TestCase
     }
 
     /**
+     * 读接口下发的衣架数字（GET /api/user/quota 的 data）
+     *
+     * 为什么要先重新 actingAs：`Sanctum::actingAs` 会把用户实例缓存在 guard 里，
+     * 而同步接口是在事务里另起一条查询（lockForUpdate）改库的 —— 不换实例的话，
+     * 下面读到的还是改动**之前**的余额（真机上每个请求各自从库里取用户，不存在这个问题，纯测试环境的事）
+     */
+    private function quotaOf(User $user): array
+    {
+        Sanctum::actingAs($user->refresh());
+
+        return $this->getJson('/api/user/quota')->json('data');
+    }
+
+    /**
      * 额度够：录一件扣一件（两个余额都减 1）
      *
      * 预期：code=0，item_quota 3→2，daily_quota 2→1
@@ -417,33 +431,82 @@ class QuotaTest extends TestCase
 
     /**
      * 场景：「我的」页顶部那块衣架卡片读的接口
-     * 预期：出参有衣架口径（今日/总共 + 分母），**旧字段也还在**（老版本小程序照样能读）
+     * 预期：出参有衣架口径（今日/总共 + 分母），**旧字段也还在**（老版本小程序照样能读）；
+     *       分母 = 余额 + 已占用，所以挂了几件之后分母还是建号送的那个数
      */
     public function test_quota_endpoint_exposes_hanger_fields(): void
     {
-        $this->userWith(7, 3);
+        $free = (int) config('quota.item_quota');
+        $user = $this->userWith($free, 3);
 
-        $res = $this->getJson('/api/user/quota');
+        // 挂 3 件衣物：余额 100 → 97，占用 3
+        foreach (['i1', 'i2', 'i3'] as $id) {
+            $this->postJson('/api/clothes/sync', ['items' => [$this->itemPayload($id)]])
+                ->assertJson(['code' => 0]);
+        }
+
+        $data = $this->quotaOf($user);
+        $res  = $this->getJson('/api/user/quota');   // 再读一次原始响应，验证旧字段也在
+
         $res->assertOk()->assertJson(['code' => 0]);
-        $res->assertJsonPath('data.hangerTotal', 7);
-        $res->assertJsonPath('data.hangerDaily', 3);
-        $res->assertJsonPath('data.hangerTotalLimit', (int) config('quota.item_quota'), '分母按免费额度显示');
-        $res->assertJsonPath('data.hangerDailyLimit', (int) config('quota.daily_quota'));
+        $this->assertSame($free - 3, $data['hangerTotal'], '可用 = 余额');
+        $this->assertSame(0, $data['hangerDaily']);
+        $this->assertSame($free, $data['hangerTotalLimit'], '分母 = 余额 + 已占用 = 100');
+        $this->assertSame((int) config('quota.daily_quota'), $data['hangerDailyLimit']);
         // 兼容旧字段
-        $res->assertJsonPath('data.itemQuota', 7);
-        $res->assertJsonPath('data.dailyQuota', 3);
+        $res->assertJsonPath('data.itemQuota', $free - 3);
+        $res->assertJsonPath('data.dailyQuota', 0);
     }
 
     /**
-     * 场景：客服在后台把衣架余额加到超过默认值（开会员）
-     * 预期：分母跟着走，不会出现「800/500」这种怪数
+     * 场景：分母 = 账号总资产（余额 + 已占用）
+     * 预期：挂衣物、挂搭配、删掉，**分母一直不变**（只有左边那个"可用"在动）
+     *       —— 这就是 2026-09 用户改这一版的起因：别显示成「162 / 162」两个数一起减
+     */
+    public function test_total_limit_does_not_drop_when_adding(): void
+    {
+        $free = (int) config('quota.item_quota');
+        $user = $this->userWith($free, 10);
+
+        $q1 = $this->quotaOf($user);
+        $this->assertSame($free, $q1['hangerTotal']);
+        $this->assertSame($free, $q1['hangerTotalLimit'], '还没挂东西：可用 = 总数');
+
+        $this->postJson('/api/clothes/sync', ['items' => [$this->itemPayload('i1')]])->assertJson(['code' => 0]);
+        $q2 = $this->quotaOf($user);
+        $this->assertSame($free - 1, $q2['hangerTotal'], '可用 -1');
+        $this->assertSame($free, $q2['hangerTotalLimit'], '总数不变（两个数不再一起减）');
+
+        // 搭配也占一个衣架，分母照样不动
+        $this->postJson('/api/clothes/sync', ['outfits' => [$this->outfitPayload('o1')]])->assertJson(['code' => 0]);
+        $q3 = $this->quotaOf($user);
+        $this->assertSame($free - 2, $q3['hangerTotal']);
+        $this->assertSame($free, $q3['hangerTotalLimit']);
+
+        // 删掉一件：余额还回来，分母还是不变（余额 +1、占用 -1）
+        $this->postJson('/api/clothes/sync', ['deleted' => ['items' => ['i1']]])->assertJson(['code' => 0]);
+        $q4 = $this->quotaOf($user);
+        $this->assertSame($free - 1, $q4['hangerTotal'], '删掉：可用 +1');
+        $this->assertSame($free, $q4['hangerTotalLimit'], '总数还是不变');
+    }
+
+    /**
+     * 场景：客服在后台把衣架余额加过（开会员）
+     * 预期：分母 = 余额 + 已占用，加量后分母跟着涨，不会出现「102 / 100」这种怪数
      */
     public function test_total_limit_follows_topped_up_balance(): void
     {
-        $over = (int) config('quota.item_quota') + 300;   // 客服给加过额度
-        $this->userWith($over, 50);
+        // 建号送 100，客服又加了 300 → 这个账号一共 400 个衣架；先挂 2 件
+        $over = (int) config('quota.item_quota') + 300;
+        $user = $this->userWith($over, 10);
 
-        $this->getJson('/api/user/quota')->assertJsonPath('data.hangerTotalLimit', $over);
+        foreach (['i1', 'i2'] as $id) {
+            $this->postJson('/api/clothes/sync', ['items' => [$this->itemPayload($id)]])->assertJson(['code' => 0]);
+        }
+
+        $data = $this->quotaOf($user);
+        $this->assertSame($over - 2, $data['hangerTotal'], '余额减了 2');
+        $this->assertSame($over, $data['hangerTotalLimit'], '分母 = 余额 + 已占用，还是 400');
     }
 
     /**

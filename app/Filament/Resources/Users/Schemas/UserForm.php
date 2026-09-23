@@ -18,7 +18,7 @@ class UserForm
                 TextInput::make('nickname'),
                 TextInput::make('avatar_url')
                     ->url(),
-                // 衣架（余额制）：开会员/套餐就在这两个数字上加，加几个用户就能多挂几样东西
+                // 衣架（余额制）：客服加量就在这两个数字上加，加几个用户就能多挂几样东西
                 // （一件衣物 = 一个衣架，一套搭配 = 一个衣架，共用一个架子）
                 TextInput::make('item_quota')
                     ->label('衣架余额（总）')

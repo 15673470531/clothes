@@ -322,7 +322,7 @@ class TryonService
         }
 
         if (config('tryon.member_only') && empty($user->getAttribute('is_member'))) {
-            throw new TryonException(4003, '试穿是会员功能，可联系客服开通会员');
+            throw new TryonException(4003, '试穿还没开放，有需要可以联系客服');
         }
 
         if (empty($plan['top']) && empty($plan['bottom'])) {

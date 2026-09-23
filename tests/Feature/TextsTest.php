@@ -120,13 +120,17 @@ class TextsTest extends TestCase
         Sanctum::actingAs($user);
 
         $res = $this->postJson('/api/hanger/checkin')->assertOk()->assertJson(['code' => 0]);
-        $this->assertSame('签到成功 +2 个衣架', $res->json('data.toast'), '后端拼好的提示语');
+        $this->assertSame(
+            '签到成功 +' . config('quota.reward_checkin') . ' 个衣架',
+            $res->json('data.toast'),
+            '后端拼好的提示语'
+        );
 
         // 改文案表 → 提示语跟着变（这就是"随时能改提示"的意义）
         $this->writeFile(json_encode(['reward.checkin_ok' => '打卡成功，+{n} 个衣架到手'], JSON_UNESCAPED_UNICODE));
         $res2 = $this->postJson('/api/hanger/share')->assertOk()->assertJson(['code' => 0]);
         $this->assertSame(
-            '分享成功 +10 个衣架',
+            '分享成功 +' . config('quota.reward_share') . ' 个衣架',
             $res2->json('data.toast'),
             '只改了签到那条，分享那条仍用默认'
         );
