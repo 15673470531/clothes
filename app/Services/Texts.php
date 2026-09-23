@@ -52,6 +52,11 @@ class Texts
         'common.ok'               => '好',
         'common.go_wardrobe'      => '去衣橱',
 
+        // ---- 宣传语（2026-09 用户要的：空态/关于页/分享都用这几句，改这里全站生效）----
+        // slogan.main 是全站主口号；空态可以各自再给一句更贴场景的
+        'slogan.main'             => '衣服都在，搭配不用想',
+        'slogan.wardrobe_empty'   => '拍一张，衣柜就搬进手机里',
+
         // ---- 登录 / 「我的」页 ----
         'mine.logging_in'         => '登录中...',
         'mine.login_ok'           => '登录成功',
