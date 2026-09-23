@@ -17,6 +17,8 @@ use RuntimeException;
  *   4006 今天生成次数用完了
  *   4007 试穿功能没开
  *   4008 生成失败（供应商侧问题）
+ *   4009 洗白底功能没开（记录衣物页那个入口，跟试穿开关解耦）
+ *   4010 今天洗白底的次数用完了（每人每天 N 次免费，见 config tryon.normalize_daily_limit）
  */
 class TryonException extends RuntimeException
 {

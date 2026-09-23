@@ -23,8 +23,11 @@
         <env name="BCRYPT_ROUNDS" value="4"/>
         <env name="BROADCAST_CONNECTION" value="null"/>
         <env name="CACHE_STORE" value="array"/>
-        <env name="DB_CONNECTION" value="sqlite"/>
-        <env name="DB_DATABASE" value=":memory:"/>
+        <!-- force="true" 是必须的：本地 docker compose 把 DB_CONNECTION=mysql / DB_DATABASE=clothes
+             作为**真环境变量**注进了容器，优先级高于这里的值。不加 force 的话 artisan test 会连
+             本地 MySQL 跑，RefreshDatabase 每次都 migrate:fresh —— 会把开发库的数据洗掉（2026-09 踩过）。 -->
+        <env name="DB_CONNECTION" value="sqlite" force="true"/>
+        <env name="DB_DATABASE" value=":memory:" force="true"/>
         <env name="MAIL_MAILER" value="array"/>
         <env name="QUEUE_CONNECTION" value="sync"/>
         <env name="SESSION_DRIVER" value="array"/>

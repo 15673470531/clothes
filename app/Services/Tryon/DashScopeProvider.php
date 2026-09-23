@@ -23,6 +23,12 @@ class DashScopeProvider implements TryonProvider
 {
     private const BASE = 'https://dashscope.aliyuncs.com/api/v1';
 
+    /** 归一化用哪个模型：新键 normalize_model 优先，老键 edit_model 兜底 */
+    private function normalizeModel(): string
+    {
+        return (string) (config('tryon.normalize_model') ?: config('tryon.edit_model'));
+    }
+
     public function __construct(private readonly string $apiKey)
     {
     }
@@ -30,7 +36,7 @@ class DashScopeProvider implements TryonProvider
     public function normalize(string $imageUrl): string
     {
         $body = [
-            'model' => config('tryon.edit_model'),
+            'model' => $this->normalizeModel(),
             'input' => [
                 'messages' => [[
                     'role'    => 'user',

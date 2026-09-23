@@ -29,8 +29,10 @@ class ResetDailyQuota extends Command
         $fresh = $quota->dailyDefault();
         $today = today()->toDateString();
 
+        // 按**日期**比，别按字符串比：sqlite 会把 date 列存成 'Y-m-d 00:00:00'，
+        // 直接 `!= '2026-09-24'` 会把"今天已经重置过"的人也挑进来（MySQL 没问题，测试跑 sqlite 时挂）
         $query = User::where(function ($q) use ($today) {
-            $q->whereNull('daily_reset_date')->orWhere('daily_reset_date', '!=', $today);
+            $q->whereNull('daily_reset_date')->orWhereDate('daily_reset_date', '!=', $today);
         });
 
         if ($this->option('dry-run')) {

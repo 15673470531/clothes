@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\Api\FeedbackController;
+use App\Http\Controllers\Api\NormalizeController;
 use App\Http\Controllers\Api\AdminController;
 use App\Http\Controllers\Api\TryonController;
 use App\Http\Controllers\Api\UploadController;
@@ -50,6 +51,10 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // 图片上传（衣物照片 / 搭配封面；头像有单独的 user/avatar）
     Route::post('upload/image',     [UploadController::class, 'image']);
+
+    // 洗白底（归一化）：记录衣物页底部那个入口；**同步**接口，15~20 秒出图
+    Route::get('items/normalize/status', [NormalizeController::class, 'status']);
+    Route::post('items/normalize',       [NormalizeController::class, 'store']);
 
     // 衣物 / 搭配 / 日历 数据同步（二期第二步：数据上云，存 MySQL）
     // 只有两个接口：拉全量 + 批量推（小程序自己攒「待推队列」，弱网下一次推完）
