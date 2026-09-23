@@ -8,6 +8,7 @@ use App\Http\Controllers\Api\UserController;
 use App\Http\Controllers\Api\ClothesController;
 use App\Http\Controllers\Api\HangerRewardController;
 use App\Http\Controllers\Api\TextsController;
+use App\Http\Controllers\Api\AssetsController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -27,6 +28,10 @@ Route::post('user/login', [UserController::class, 'login']);
 // 文案表（2026-09）：小程序启动拉一次，所有提示语都从这儿取。
 // **也免登录** —— 登录前/未登录那几句提示（"先登录微信"之类）也要有文案
 Route::get('texts', [TextsController::class, 'index']);
+
+// 插画资源表（2026-09 用户要的）：空态/关于页的插画 URL，图片在 OSS 上（换图不发版）。
+// 同样**免登录** —— 还没登录、还没录东西时的空态插画也得显示
+Route::get('assets', [AssetsController::class, 'index']);
 
 
 // 以下接口需要 Bearer Token
