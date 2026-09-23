@@ -108,11 +108,40 @@ class ClothesController extends Controller
         $counts = ['items' => 0, 'outfits' => 0, 'wears' => 0, 'deletedItems' => 0, 'deletedOutfits' => 0];
         $staleUrls = [];   // 事务提交后再删的 OSS 对象
 
-        // 额度（用户表上的余额）在事务里扣：先锁住用户行再读余额，
-        // 免得同一秒两批请求都读到「还剩 1 件」然后各扣一次
+        // 顺序很重要（2026-09 起：衣架）：
+        //   ① 先删 —— 删掉一件衣物/一套搭配，那个衣架就腾出来了（总额 +1）
+        //   ② 再结算 —— 扣这批里**新增的**衣物 + 新增的搭配（各占一个衣架）
+        //   ③ 最后写库
+        // 先还再扣，「删一件再加一件」在同一批里就能走通；衣架不够时整批不写库（不做半个批次）。
+        // 额度在事务里算，并且先把用户行 lockForUpdate 锁住，免得同一秒两批请求各扣一次。
         try {
             DB::transaction(function () use ($data, $uid, &$counts, &$staleUrls) {
-                $this->consumeQuota($uid, array_column($data['items'] ?? [], 'id'));
+                $freed = 0;   // 这一批腾出来的衣架数
+
+                foreach ($data['deleted']['items'] ?? [] as $cid) {
+                    $del = $this->deleteItem($uid, (string) $cid);
+                    $staleUrls = array_merge($staleUrls, $del['urls']);
+                    if ($del['freed']) {
+                        $freed++;
+                    }
+                    $counts['deletedItems']++;
+                }
+
+                foreach ($data['deleted']['outfits'] ?? [] as $cid) {
+                    $del = $this->deleteOutfit($uid, (string) $cid);
+                    $staleUrls = array_merge($staleUrls, $del['urls']);
+                    if ($del['freed']) {
+                        $freed++;
+                    }
+                    $counts['deletedOutfits']++;
+                }
+
+                $this->settleQuota(
+                    $uid,
+                    array_column($data['items'] ?? [], 'id'),
+                    array_column($data['outfits'] ?? [], 'id'),
+                    $freed
+                );
 
                 foreach ($data['items'] ?? [] as $row) {
                     $staleUrls = array_merge($staleUrls, $this->upsertItem($uid, $row));
@@ -131,16 +160,6 @@ class ClothesController extends Controller
                     $this->putWear($uid, (string) $date, (string) $outfitId);
                     $counts['wears']++;
                 }
-
-                foreach ($data['deleted']['items'] ?? [] as $cid) {
-                    $staleUrls = array_merge($staleUrls, $this->deleteItem($uid, (string) $cid));
-                    $counts['deletedItems']++;
-                }
-
-                foreach ($data['deleted']['outfits'] ?? [] as $cid) {
-                    $staleUrls = array_merge($staleUrls, $this->deleteOutfit($uid, (string) $cid));
-                    $counts['deletedOutfits']++;
-                }
             });
         } catch (QuotaExceededException $e) {
             // 额度不够：整个请求不写库（不做「半个批次」），小程序会弹对应提示
@@ -157,25 +176,41 @@ class ClothesController extends Controller
     // ===== 内部 =====
 
     /**
-     * 扣额度：按这批里**新的**条数扣（编辑已有衣物不扣）
+     * 结算衣架：先把删掉的还回来（refund），再扣这批里**新增的**衣物 + 新增的搭配
+     *
+     * 口径（2026-09 用户定，改过一次又改回来了，别再来回改）：
+     *  - 一个衣架 = 云端挂着的一样东西：**新增**才占（衣物 1 个、搭配 1 个）
+     *  - **改了内容不占**：换搭配里的衣物只是改了字段；重出封面 / 换衣物照片都是"换一张"，
+     *    旧图会被 deleteByUrl 删掉（见 push 末尾的 $staleUrls），云端总数没变 → 不占
+     *  - 删除会还（只还总额，每日不回补，见 Quota::refund）
+     * 这样账是平的：余额永远 = 上限 − 云端现在挂着的（衣物 + 搭配）数量
      *
      * 必须在事务里、并且已经锁住用户行（lockForUpdate）——否则同一秒两批请求会各扣一次。
-     * 余额不够就抛 QuotaExceededException，由 push() 转成 {code:4001/4002, msg}。
+     * 不够就抛 QuotaExceededException，由 push() 转成 {code:4001/4002, msg}，整批不写库。
      */
-    private function consumeQuota(int $uid, array $clientIds): void
+    private function settleQuota(int $uid, array $itemIds, array $outfitIds, int $refund): void
     {
-        if (!$clientIds) {
-            return;
-        }
-
         $user = User::query()->lockForUpdate()->find($uid);
         if (!$user) {
             return;
         }
 
-        $existing = ClothesItem::where('user_id', $uid)->pluck('client_id')->all();
-        $newCount = count(array_diff(array_unique($clientIds), $existing));
-        $this->quota->consume($user, $newCount);
+        // 先还：这一批删掉的
+        if ($refund > 0) {
+            $this->quota->refund($user, $refund);
+        }
+
+        // 再扣：只有库里还没有的（软删过的会被当成"复活"，重新占一个衣架）
+        $newItems = count(array_diff(
+            array_unique($itemIds),
+            ClothesItem::where('user_id', $uid)->pluck('client_id')->all()
+        ));
+        $newOutfits = count(array_diff(
+            array_unique($outfitIds),
+            ClothesOutfit::where('user_id', $uid)->pluck('client_id')->all()
+        ));
+
+        $this->quota->consume($user, $newItems + $newOutfits);
     }
 
     /**
@@ -250,26 +285,36 @@ class ClothesController extends Controller
         );
     }
 
-    /** 删衣物（软删留痕）+ 返回它的图地址待清理 */
+    /**
+     * 删衣物（软删留痕）+ 返回它的图地址待清理 + 这次删是否腾出一个衣架
+     *
+     * freed 只在「这次真的从没删变成已删」时为 true —— 重复推同一个已删 id 不会反复还衣架
+     * （软删过的查不到，直接返回 false）。
+     *
+     * @return array{urls: array, freed: bool}
+     */
     private function deleteItem(int $uid, string $cid): array
     {
         $item = ClothesItem::where('user_id', $uid)->where('client_id', $cid)->first();
         if (!$item) {
-            return [];
+            return ['urls' => [], 'freed' => false];
         }
 
         $url = (string) $item->image_url;
         $item->delete();
 
-        return $url !== '' ? [$url] : [];
+        return ['urls' => $url !== '' ? [$url] : [], 'freed' => true];
     }
 
-    /** 删搭配（软删留痕）+ 返回它的封面地址待清理 */
+    /**
+     * 删搭配（软删留痕）+ 返回它的封面地址待清理 + 这次删是否腾出一个衣架
+     * @return array{urls: array, freed: bool}
+     */
     private function deleteOutfit(int $uid, string $cid): array
     {
         $outfit = ClothesOutfit::where('user_id', $uid)->where('client_id', $cid)->first();
         if (!$outfit) {
-            return [];
+            return ['urls' => [], 'freed' => false];
         }
 
         $url = (string) $outfit->cover_url;
@@ -278,7 +323,7 @@ class ClothesController extends Controller
         // 搭配被删：那天的日历记录跟着清掉，免得日历上留一条「这套已删除」
         ClothesWearLog::where('user_id', $uid)->where('outfit_client_id', $cid)->delete();
 
-        return $url !== '' ? [$url] : [];
+        return ['urls' => $url !== '' ? [$url] : [], 'freed' => true];
     }
 
     /** 衣物 → 接口出参（字段名跟小程序本机那份保持一致，前端不用做映射） */

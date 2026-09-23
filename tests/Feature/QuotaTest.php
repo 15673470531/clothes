@@ -9,14 +9,16 @@ use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
 
 /**
- * 额度测试（2026-09 第二版：用户表上的余额）
+ * 衣架测试（2026-09 第三版：额度 = 衣架）
  *
- * 背景：照片进 OSS 要花钱，所以每个人能录的衣物是有限的。额度做成用户表上的两个余额：
- *   users.item_quota    还能录几件（成功录一件减 1）
- *   users.daily_quota   今天还能录几件（每天重置）
- * 被测：App\Services\Quota + ClothesController::push 的扣减逻辑 + quota:reset-daily 命令
+ * 背景：照片进 OSS 要花钱，所以一个人能挂的东西是有限的。
+ * **一个衣架挂一样东西：新增一件衣物占 1 个，新增一套搭配也占 1 个**（共用同一个架子）。
+ *   users.item_quota    总共还剩几个衣架（新增 -1；**删掉不想要的 +1（只还总额）**）
+ *   users.daily_quota   今天还能挂几个（每天重置）
+ * 被测：App\Services\Quota + ClothesController::push 的结算逻辑 + quota:reset-daily 命令
  *
- * 覆盖：够就扣、不够就整批拦（4001/4002）、编辑不扣、跨天自动补满、每天重置命令。
+ * 覆盖：够就扣、不够就整批拦（4001/4002）、编辑不扣、穿搭也占衣架、删除退还（只还总额）、
+ *       重复删不叠加、同一批"删一件再加一件"、跨天自动补满、每天重置命令、接口出参兼容旧字段。
  * 注意：用例里直接把余额设小，不去造 200 条数据。
  */
 class QuotaTest extends TestCase
@@ -39,11 +41,24 @@ class QuotaTest extends TestCase
         ];
     }
 
-    /** 造一个余额可控的用户并登录 */
-    private function userWith(int $itemQuota, int $dailyQuota = 50): User
-    {
-        $user = User::factory()->create([
-            'item_quota'       => $itemQuota,
+    /**
+     * 造一个余额可控的用户并登录
+     *
+     * 注意：这里**关掉每月系统赠送**（config 设 0）—— 拉额度接口会惰性补发 +50，
+     * 会让余额断言全部偏移 50，那些用例测的是衣架机制，不是每月赠送。
+     * 每月赠送本身在 HangerRewardTest 里单独测。
+     /**
+      * 造一个余额可控的用户并登录
+      *
+      * 注意：这里**关掉每月系统赠送**（config 设 0）—— 拉额度接口会惰性补发 +50，
+      * 会让余额断言整体偏 50。那些用例测的是衣架机制，不是每月赠送（后者在 HangerRewardTest 里单独测）。
+      */
+     private function userWith(int $itemQuota, int $dailyQuota = 50): User
+     {
+         config(['quota.reward_monthly' => 0]);
+
+         $user = User::factory()->create([
+             'item_quota'       => $itemQuota,
             'daily_quota'      => $dailyQuota,
             'daily_reset_date' => today()->toDateString(),
         ]);
@@ -80,7 +95,8 @@ class QuotaTest extends TestCase
 
         $res = $this->postJson('/api/clothes/sync', ['items' => [$this->itemPayload('i1'), $this->itemPayload('i2')]]);
         $res->assertOk()->assertJson(['code' => 4001]);
-        $this->assertStringContainsString('还能再录 1 件', $res->json('msg'));
+        $this->assertStringContainsString('还剩 1 个', $res->json('msg'), '提示要按衣架口径说话');
+        $this->assertStringContainsString('衣架', $res->json('msg'));
 
         $this->assertSame(0, ClothesItem::where('user_id', $user->id)->count(), '被拦下的批次不许写库');
         $this->assertSame(1, $user->refresh()->item_quota, '拦下了就不该扣额度');
@@ -136,14 +152,305 @@ class QuotaTest extends TestCase
             ->assertOk()->assertJson(['code' => 0]);
 
         $user->refresh();
-        $this->assertSame(49, $user->daily_quota, '应视为新的一天、先补满 50 再扣 1');
+        $this->assertSame((int) config('quota.daily_quota') - 1, $user->daily_quota, '应视为新的一天、先补满再扣 1');
         $this->assertSame(today()->toDateString(), $user->daily_reset_date->toDateString());
     }
 
     /**
-     * 每天重置命令：把所有人的今日额度重置回默认值，总额度不动
+     * 场景：免费额度的数字来源
+     * 预期：config('quota.*') 就是新用户拿到的免费衣架数（**100 / 100**，2026-09 用户定稿），
+     *       建号时按它初始化（UserController::login），列默认值也由迁移同步成同一个数
+     */
+    public function test_free_hanger_amount_comes_from_config(): void
+    {
+        $this->assertSame(100, (int) config('quota.item_quota'), '免费总数');
+        $this->assertSame(100, (int) config('quota.daily_quota'), '每天上限');
+    }
+
+    /** 造一个搭配 payload（接口只认这些字段） */
+    private function outfitPayload(string $id, array $itemIds = []): array
+    {
+        return [
+            'id'        => $id,
+            'name'      => '测试搭配',
+            'nameAuto'  => false,
+            'occasions' => [],
+            'itemIds'   => $itemIds,
+            'slots'     => [],
+            'coverUrl'  => '',
+            'createdAt' => 1758000000000,
+        ];
+    }
+
+    /**
+     * 场景：新增一套搭配
+     * 预期：也占一个衣架（总额、今日各减 1）—— 穿搭以前完全不限，2026-09 起要占
+     */
+    public function test_outfit_consumes_one_hanger(): void
+    {
+        $user = $this->userWith(3, 2);
+
+        $this->postJson('/api/clothes/sync', ['outfits' => [$this->outfitPayload('o1')]])
+            ->assertOk()->assertJson(['code' => 0]);
+
+        $user->refresh();
+        $this->assertSame(2, $user->item_quota, '新增一套搭配占一个衣架');
+        $this->assertSame(1, $user->daily_quota);
+    }
+
+    /**
+     * 场景：编辑已有搭配（改名 / 换衣物 / 重出封面）
+     * 预期：**不占**衣架
      *
-     * 预期：两个人 daily_quota 都回 50；item_quota 保持各自的值
+     * 为什么编辑不占（2026-09 用户把口径纠正回这里）：
+     * 换衣物只是改字段；重出封面、换照片都是"换一张"——旧图由 push 末尾的 deleteByUrl 删掉，
+     * 云端挂着的总数没变，成本没涨。所以只有"新增"占、"删除"还，账才是平的。
+     */
+    public function test_editing_outfit_name_only_does_not_consume(): void
+    {
+        $user = $this->userWith(2);
+        $this->postJson('/api/clothes/sync', ['outfits' => [$this->outfitPayload('o1')]])->assertJson(['code' => 0]);
+        $this->assertSame(1, $user->refresh()->item_quota);
+
+        $edit = $this->outfitPayload('o1');
+        $edit['name'] = '改个名字';
+        $this->postJson('/api/clothes/sync', ['outfits' => [$edit]])->assertOk()->assertJson(['code' => 0]);
+
+        $this->assertSame(1, $user->refresh()->item_quota, '只改名字不占');
+    }
+
+    /**
+     * 场景：换衣物 + 重出封面（点「完成」时都会发生）
+     * 预期：**不占** —— 旧封面会被删掉，云端总数没变（用户 2026-09 纠正的口径）
+     */
+    public function test_outfit_change_items_and_cover_does_not_consume(): void
+    {
+        $user = $this->userWith(3, 10);
+        $first = $this->outfitPayload('o1', ['i1']);
+        $first['coverUrl'] = 'https://oss.example.com/outfit/o1-cover-1.jpg';
+        $this->postJson('/api/clothes/sync', ['outfits' => [$first]]);
+        $this->assertSame(2, $user->refresh()->item_quota);
+
+        // 换了衣物 + 又出一张新封面
+        $edit = $this->outfitPayload('o1', ['i1', 'i2']);
+        $edit['coverUrl'] = 'https://oss.example.com/outfit/o1-cover-2.jpg';
+        $this->postJson('/api/clothes/sync', ['outfits' => [$edit]])->assertOk()->assertJson(['code' => 0]);
+
+        $this->assertSame(2, $user->refresh()->item_quota, '编辑不占：旧的封面会被删掉，云端没多东西');
+    }
+
+    /**
+     * 场景：后台同步把同一条搭配原样再推一遍（内容没变）
+     * 预期：不占 —— 否则每次拉取/补传都扣一个衣架，人会炸
+     */
+    public function test_outfit_same_content_pushed_again_does_not_consume(): void
+    {
+        $user = $this->userWith(3, 10);
+        $row = $this->outfitPayload('o1', ['i1']);
+        $row['coverUrl'] = 'https://oss.example.com/outfit/o1-cover.jpg';
+
+        $this->postJson('/api/clothes/sync', ['outfits' => [$row]]);
+        $this->assertSame(2, $user->refresh()->item_quota);
+
+        foreach (range(1, 3) as $i) {
+            $this->postJson('/api/clothes/sync', ['outfits' => [$row]])->assertOk()->assertJson(['code' => 0]);
+        }
+
+        $this->assertSame(2, $user->refresh()->item_quota, '内容没变，推多少遍都不占');
+    }
+
+    /**
+     * 场景：给已有衣物换照片 / 把同一张再推一遍
+     * 预期：都不占 —— 换照片是"换一张"（旧图会被删），推同一张是内容没变
+     */
+    public function test_item_photo_change_does_not_consume(): void
+    {
+        $user = $this->userWith(3, 10);
+        $first = $this->itemPayload('i1');
+        $first['imageUrl'] = 'https://oss.example.com/clothes/i1-a.jpg';
+        $this->postJson('/api/clothes/sync', ['items' => [$first]]);
+        $this->assertSame(2, $user->refresh()->item_quota);
+
+        $again = $this->itemPayload('i1');
+        $again['imageUrl'] = 'https://oss.example.com/clothes/i1-a.jpg';   // 同一张再推一遍
+        $this->postJson('/api/clothes/sync', ['items' => [$again]])->assertJson(['code' => 0]);
+        $this->assertSame(2, $user->refresh()->item_quota, '照片没变不占');
+
+        $again['imageUrl'] = 'https://oss.example.com/clothes/i1-b.jpg';   // 换了照片
+        $this->postJson('/api/clothes/sync', ['items' => [$again]])->assertJson(['code' => 0]);
+        $this->assertSame(2, $user->refresh()->item_quota, '换照片也不占：旧图会被删掉');
+    }
+
+    /**
+     * 场景：删掉一件衣物
+     * 预期：衣架还回总额（+1），**今日不回补**（每日是速率限制，不然"删了再加"能无限循环）
+     */
+    public function test_deleting_item_refunds_total_only(): void
+    {
+        $user = $this->userWith(3, 3);
+        $this->postJson('/api/clothes/sync', ['items' => [$this->itemPayload('i1')]])->assertJson(['code' => 0]);
+        $user->refresh();
+        $this->assertSame(2, $user->item_quota);
+        $this->assertSame(2, $user->daily_quota);
+
+        $this->postJson('/api/clothes/sync', ['deleted' => ['items' => ['i1']]])
+            ->assertOk()->assertJson(['code' => 0]);
+
+        $user->refresh();
+        $this->assertSame(3, $user->item_quota, '删掉衣物：衣架回到架子上');
+        $this->assertSame(2, $user->daily_quota, '今日额度不回补（防"删了再加"无限循环）');
+    }
+
+    /**
+     * 场景：删掉一套搭配 + 删一件衣物
+     * 预期：各还一个衣架（总额 +2）
+     */
+    public function test_deleting_outfit_also_refunds(): void
+    {
+        $user = $this->userWith(4, 4);
+        $this->postJson('/api/clothes/sync', [
+            'items'   => [$this->itemPayload('i1')],
+            'outfits' => [$this->outfitPayload('o1')],
+        ])->assertOk()->assertJson(['code' => 0]);
+        $this->assertSame(2, $user->refresh()->item_quota, '一件衣物 + 一套搭配 = 2 个衣架');
+
+        $this->postJson('/api/clothes/sync', ['deleted' => ['items' => ['i1'], 'outfits' => ['o1']]])
+            ->assertOk()->assertJson(['code' => 0]);
+
+        $this->assertSame(4, $user->refresh()->item_quota, '两个衣架都回到架子上');
+    }
+
+    /**
+     * 场景：同一条衣物被重复推「已删除」（客户端重发、或多端同步都会出现）
+     * 预期：只还一次衣架 —— 不能靠重复删把衣架刷出来
+     */
+    public function test_repeated_delete_does_not_refund_twice(): void
+    {
+        $user = $this->userWith(3, 3);
+        $this->postJson('/api/clothes/sync', ['items' => [$this->itemPayload('i1')]])->assertJson(['code' => 0]);
+
+        $this->postJson('/api/clothes/sync', ['deleted' => ['items' => ['i1']]])->assertJson(['code' => 0]);
+        $this->postJson('/api/clothes/sync', ['deleted' => ['items' => ['i1']]])->assertJson(['code' => 0]);
+        $this->postJson('/api/clothes/sync', ['deleted' => ['items' => ['i1']]])->assertJson(['code' => 0]);
+
+        $this->assertSame(3, $user->refresh()->item_quota, '重复删不叠加（每次只还真的从没删变已删的那一次）');
+    }
+
+    /**
+     * 场景：**总额**衣架用完时，同一批里"删一件 + 加一件"
+     * 预期：先还再扣，能顺利通过（这是"删除退还"最实际的用途）
+     * 注意：今日衣架要留余地 —— 删除只退还总额，不退还今日（下一条用例专门钉这个口径）
+     */
+    public function test_delete_and_add_in_one_batch(): void
+    {
+        $user = $this->userWith(1, 10);
+        $this->postJson('/api/clothes/sync', ['items' => [$this->itemPayload('i-old')]])->assertJson(['code' => 0]);
+        $this->assertSame(0, $user->refresh()->item_quota, '先用掉最后一个衣架');
+
+        $this->postJson('/api/clothes/sync', [
+            'items'   => [$this->itemPayload('i-new')],
+            'deleted' => ['items' => ['i-old']],
+        ])->assertOk()->assertJson(['code' => 0]);
+
+        $this->assertSame(0, $user->refresh()->item_quota, '删一个加一个：总额还是 0，没被拦');
+        $this->assertSame(1, ClothesItem::where('user_id', $user->id)->count(), '新的那件写进去了');
+    }
+
+    /**
+     * 场景：今天的衣架用完了，删掉一件再加一件
+     * 预期：仍然被拦（4002）—— 每日是"今天最多挂几个"的速率限制，
+     * 删了不回补，否则「加满 → 全删 → 再加满」可以无限循环，限制形同虚设
+     */
+    public function test_delete_does_not_refund_daily_so_no_unlimited_loop(): void
+    {
+        $user = $this->userWith(50, 1);
+        $this->postJson('/api/clothes/sync', ['items' => [$this->itemPayload('i-old')]])->assertJson(['code' => 0]);
+        $this->assertSame(0, $user->refresh()->daily_quota, '今天的衣架用完了');
+
+        $res = $this->postJson('/api/clothes/sync', [
+            'items'   => [$this->itemPayload('i-new')],
+            'deleted' => ['items' => ['i-old']],
+        ]);
+        $res->assertOk()->assertJson(['code' => 4002]);
+        $this->assertStringContainsString('今天的衣架用完了', $res->json('msg'));
+
+        $user->refresh();
+        $this->assertSame(49, $user->item_quota, '整批回滚：连"还衣架"也一起回滚，总额保持原样');
+        $this->assertSame(0, $user->daily_quota, '今日不还（防"删了再加"无限循环）');
+        $this->assertSame(1, ClothesItem::where('user_id', $user->id)->count(), '被拦下时那件旧的也没被删掉');
+    }
+
+    /**
+     * 场景：一批里同时新增衣物和搭配，衣架不够
+     * 预期：整批拦下（code=4001），什么都不写 —— 不做"写一半"
+     */
+    public function test_batch_items_and_outfits_share_one_pool(): void
+    {
+        $user = $this->userWith(1, 10);
+
+        $res = $this->postJson('/api/clothes/sync', [
+            'items'   => [$this->itemPayload('i1')],
+            'outfits' => [$this->outfitPayload('o1')],
+        ]);
+        $res->assertOk()->assertJson(['code' => 4001]);
+
+        $user->refresh();
+        $this->assertSame(1, $user->item_quota, '拦下了就不该扣');
+        $this->assertSame(0, ClothesItem::where('user_id', $user->id)->count());
+        $this->assertSame(0, \App\Models\ClothesOutfit::where('user_id', $user->id)->count());
+    }
+
+    /**
+     * 场景：删过的衣物再推上来（复活）
+     * 预期：重新占一个衣架（删的时候还回去了，一进一出抵平）
+     */
+    public function test_resurrected_item_occupies_hanger_again(): void
+    {
+        $user = $this->userWith(3, 10);
+        $this->postJson('/api/clothes/sync', ['items' => [$this->itemPayload('i1')]])->assertJson(['code' => 0]);
+        $this->postJson('/api/clothes/sync', ['deleted' => ['items' => ['i1']]])->assertJson(['code' => 0]);
+        $this->assertSame(3, $user->refresh()->item_quota, '删完回到 3');
+
+        $this->postJson('/api/clothes/sync', ['items' => [$this->itemPayload('i1')]])->assertJson(['code' => 0]);
+        $this->assertSame(2, $user->refresh()->item_quota, '复活要重新占一个衣架');
+    }
+
+    /**
+     * 场景：「我的」页顶部那块衣架卡片读的接口
+     * 预期：出参有衣架口径（今日/总共 + 分母），**旧字段也还在**（老版本小程序照样能读）
+     */
+    public function test_quota_endpoint_exposes_hanger_fields(): void
+    {
+        $this->userWith(7, 3);
+
+        $res = $this->getJson('/api/user/quota');
+        $res->assertOk()->assertJson(['code' => 0]);
+        $res->assertJsonPath('data.hangerTotal', 7);
+        $res->assertJsonPath('data.hangerDaily', 3);
+        $res->assertJsonPath('data.hangerTotalLimit', (int) config('quota.item_quota'), '分母按免费额度显示');
+        $res->assertJsonPath('data.hangerDailyLimit', (int) config('quota.daily_quota'));
+        // 兼容旧字段
+        $res->assertJsonPath('data.itemQuota', 7);
+        $res->assertJsonPath('data.dailyQuota', 3);
+    }
+
+    /**
+     * 场景：客服在后台把衣架余额加到超过默认值（开会员）
+     * 预期：分母跟着走，不会出现「800/500」这种怪数
+     */
+    public function test_total_limit_follows_topped_up_balance(): void
+    {
+        $over = (int) config('quota.item_quota') + 300;   // 客服给加过额度
+        $this->userWith($over, 50);
+
+        $this->getJson('/api/user/quota')->assertJsonPath('data.hangerTotalLimit', $over);
+    }
+
+    /**
+     * 每天重置命令：把「今天还没重置过」的人的今日额度重置回默认值，总额度不动
+     *
+     * 预期：a（昨天的日期）回满 100；b（日期已是今天，说明已被惰性重置过）**命令不碰它**，
+     *       保持它当前的值；两人的 item_quota 各自不变
      */
     public function test_reset_daily_command(): void
     {
@@ -153,8 +460,10 @@ class QuotaTest extends TestCase
         $this->artisan('quota:reset-daily')
             ->assertSuccessful();
 
-        $this->assertSame(50, $a->refresh()->daily_quota);
-        $this->assertSame(50, $b->refresh()->daily_quota, '当天已重置过的也会被再刷一遍，结果一样，不影响');
+        $full = (int) config('quota.daily_quota');
+        $this->assertSame($full, $a->refresh()->daily_quota);
+        // 命令只挑 daily_reset_date != 今天 的人（今天已重置过的再刷一遍没有意义，也会把用户今天用掉的额度又还回去）
+        $this->assertSame(1, $b->refresh()->daily_quota, '今天已重置过的不再重刷');
         $this->assertSame(7, $a->item_quota, '总额度是用户的资产，重置每日额度不能动它');
         $this->assertSame(3, $b->item_quota);
     }

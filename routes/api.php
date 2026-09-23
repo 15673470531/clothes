@@ -6,6 +6,8 @@ use App\Http\Controllers\Api\TryonController;
 use App\Http\Controllers\Api\UploadController;
 use App\Http\Controllers\Api\UserController;
 use App\Http\Controllers\Api\ClothesController;
+use App\Http\Controllers\Api\HangerRewardController;
+use App\Http\Controllers\Api\TextsController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -21,6 +23,10 @@ use Illuminate\Support\Facades\Route;
 
 // 登录不需要 token
 Route::post('user/login', [UserController::class, 'login']);
+
+// 文案表（2026-09）：小程序启动拉一次，所有提示语都从这儿取。
+// **也免登录** —— 登录前/未登录那几句提示（"先登录微信"之类）也要有文案
+Route::get('texts', [TextsController::class, 'index']);
 
 
 // 以下接口需要 Bearer Token
@@ -54,6 +60,14 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('users/{id}/items',   [AdminController::class, 'userItems']);
         Route::get('users/{id}/outfits', [AdminController::class, 'userOutfits']);
     });
+
+    // 赚衣架（2026-09）：「我的」页衣架卡右侧「获取更多」→ 每日签到 +2 / 分享好友 +10
+    // 三个接口出参形状一样（都是当日状态 + 最新衣架余额），领完直接刷新界面
+    Route::get('hanger/reward',   [HangerRewardController::class, 'status']);
+    Route::post('hanger/checkin', [HangerRewardController::class, 'checkin']);
+    Route::post('hanger/share',   [HangerRewardController::class, 'share']);
+    // 新用户每月免费领取（2026-09 取代"每月系统赠送"：每月 1 次，要点一下才到账）
+    Route::post('hanger/newcomer', [HangerRewardController::class, 'newcomer']);
 
     // AI 试穿（2026-09 · P2）
     // 提交与查询分开：生成要 20~35 秒，页面拿 task_id 自己轮询

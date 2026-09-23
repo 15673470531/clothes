@@ -33,6 +33,9 @@ docker compose exec app php artisan migrate
 `worker` 是队列进程（AI 试穿靠它生成，没有端口）。**AI 试穿相关的部署、配置、坑见
 [docs/AI试穿.md](docs/AI试穿.md)**。
 
+衣架额度规则见 [docs/衣架规则.md](docs/衣架规则.md)；小程序里所有提示语（toast/弹窗）
+由后端下发、改文案不用发版，见 [docs/文案.md](docs/文案.md)。
+
 ## 四、端口
 
 | 服务 | 端口 |
