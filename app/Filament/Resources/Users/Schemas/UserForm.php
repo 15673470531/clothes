@@ -18,16 +18,19 @@ class UserForm
                 TextInput::make('nickname'),
                 TextInput::make('avatar_url')
                     ->url(),
-                // 额度（余额制）：开会员/套餐就在这两个数字上加，加多少用户就能再录多少件
+                // 衣架（余额制）：开会员/套餐就在这两个数字上加，加几个用户就能多挂几样东西
+                // （一件衣物 = 一个衣架，一套搭配 = 一个衣架，共用一个架子）
                 TextInput::make('item_quota')
-                    ->label('可上传衣物数（总余额）')
+                    ->label('衣架余额（总）')
+                    ->helperText('还剩几个衣架。加 N 就是多给 N 个（挂衣物或搭配都行）。')
                     ->numeric()
-                    ->default(200)
+                    ->default(fn () => (int) config('quota.item_quota'))
                     ->required(),
                 TextInput::make('daily_quota')
-                    ->label('今天还能录几件')
+                    ->label('衣架余额（今天）')
+                    ->helperText('今天还能挂几个；每天 00:05 自动重置回默认值。')
                     ->numeric()
-                    ->default(50)
+                    ->default(fn () => (int) config('quota.daily_quota'))
                     ->required(),
                 TextInput::make('email')
                     ->label('Email address')

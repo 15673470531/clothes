@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\User;
+use App\Services\HangerRewardService;
 use App\Services\ImageStorage;
 use App\Services\Quota;
 use Illuminate\Http\Request;
@@ -81,6 +82,12 @@ class UserController extends Controller
                 'avatar_url' => $avatarUrl ?: null,
                 'email'      => $openid . '@wechat',
                 'password'   => Hash::make($openid),
+                // 免费衣架额度以 config('quota.*') 为准（别只依赖列默认值，
+                // 以后调免费额度只改配置，不用再写迁移）
+                // 只在这里给一次：建号之后再想加衣架，只能靠「删东西退还」或「赚衣架」（签到/分享/每月赠送）
+                'item_quota'       => (int) config('quota.item_quota', 100),
+                'daily_quota'      => (int) config('quota.daily_quota', 100),
+                'daily_reset_date' => today()->toDateString(),
             ]);
         } else {
             // 老用户：昵称/头像给了就更新（分开判断 —— 只换了头像没带昵称时也要存下来）
@@ -143,6 +150,11 @@ class UserController extends Controller
                 'avatar_url' => $avatarUrl ?: null,
                 'email'      => $openid . '@dev',
                 'password'   => Hash::make($openid),
+                // 跟正式建号保持一致：免费衣架也按 config('quota.*') 给，
+                // 否则本机测试号会拿到「数据库列默认值」（那个可能是旧数字，跟线上口径不一致）
+                'item_quota'       => (int) config('quota.item_quota', 100),
+                'daily_quota'      => (int) config('quota.daily_quota', 100),
+                'daily_reset_date' => today()->toDateString(),
             ]);
         }
 
@@ -211,8 +223,12 @@ class UserController extends Controller
      * 前端只显示、不判断：真正扣额度的是 ClothesController::push（事务里锁行扣），
      * 改前端绕不过去。
      */
-    public function quota(Request $request, Quota $quota)
+    public function quota(Request $request, Quota $quota, HangerRewardService $reward)
     {
+        // 每月系统赠送：没发过就顺手补发（惰性，不依赖定时任务）——
+        // 用户一打开「我的」页就会到账，衣架卡上的数字立刻反映出来
+        $reward->grantMonthly($request->user());
+
         return response()->json([
             'code' => 0,
             'msg'  => 'success',
