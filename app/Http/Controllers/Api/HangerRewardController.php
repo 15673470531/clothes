@@ -14,7 +14,7 @@ use Illuminate\Http\Request;
  *
  *   GET  /api/hanger/reward    今天的状态（签到/分享/新用户每月免费领取各领过没、各给几个、衣架余额）
  *   POST /api/hanger/checkin   每日签到
- *   POST /api/hanger/share     分享给好友
+ *   POST /api/hanger/share     分享群或者好友
  *   POST /api/hanger/newcomer  新用户每月免费领取（2026-09 取代"每月系统赠送"：要点一下才到账）
  *
  * 业务码：4008 已经领过了 / 4009 这个奖励没开
@@ -57,7 +57,7 @@ class HangerRewardController extends Controller
     }
 
     /**
-     * POST /api/hanger/share —— 分享给好友（一次 +10，每天 1 次）
+     * POST /api/hanger/share —— 分享群或者好友（一次 +4，每天 1 次；数字在 config('quota.reward_share')）
      *
      * 小程序那边是 `<button open-type="share">`：点一下弹转发面板就算领到
      * （微信不再返回"是否真的转发成功"，只能这么算，见 Service 里的说明）。

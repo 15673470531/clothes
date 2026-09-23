@@ -69,6 +69,9 @@ class Texts
         'reward.need_login'       => '先登录微信再来',
         'reward.checkin_ok'       => '签到成功 +{n} 个衣架',
         'reward.share_ok'         => '分享成功 +{n} 个衣架',
+        // 衣架到总数上限（config('quota.item_max')，200 个）时：点得动、但余额不再往上加，
+        // 就用这句替掉"+n 个衣架"，别报一个用户看不到的数字
+        'reward.capped'           => '衣架已经到上限 {max} 个了，这次的先不累加',
         // 新用户每月免费领取（2026-09 取代"每月系统赠送"：从自动到账改成点一下领）
         // 标题/说明/按钮/状态都由后端拼好，前端只显示
         'reward.newcomer_title'   => '新用户每月免费领取',
@@ -226,7 +229,7 @@ class Texts
         return array_filter($json, static fn ($v) => is_string($v));
     }
 
-    /** 取一条（后端内部拼文案用，比如「签到成功 +2 个衣架」） */
+    /** 取一条（后端内部拼文案用，比如「签到成功 +1 个衣架」） */
     public function get(string $key, array $vars = []): string
     {
         $text = $this->all()[$key] ?? '';

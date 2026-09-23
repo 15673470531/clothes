@@ -8,16 +8,17 @@ use App\Models\User;
 use Illuminate\Support\Facades\DB;
 
 /**
- * 赚衣架（2026-09 用户定：每日签到 +2、分享好友 +10、新用户每月免费领取 +50）
+ * 赚衣架（2026-09 用户定：每日签到 +1、分享群或好友 +2、新用户每月免费领取 +50）
  *
  * 「我的」页衣架卡右侧的「获取更多」进的就是这里。不做"功能介绍"那种没用的页，
  * 直接给真能拿到衣架的动作。
  *
  * 三条口径：
  *   1 **奖励加到总额**（users.item_quota），不动今日额度 —— 赚来的是资产
- *   2 **不受免费总量上限约束**（余额可以超过 config('quota.item_quota')）——
- *      那个上限只是"免费进货量"，奖励是额外赚的
- *   3 数字（+2 / +10 / +50 / 每天几次）**只从 config('quota.reward_*') 来**，
+ *   2 **受衣架总数上限约束**（config('quota.item_max')，2026-09 用户定 200）：
+ *      余额到 200 就不再累加，少给的部分直接丢（提示语会说"已到上限"，不会报虚数）；
+ *      免费额度（config('quota.item_quota')）只是"免费进货量"，不是天花板
+ *   3 数字（+1 / +2 / +50 / 每天几次）**只从 config('quota.reward_*') 来**，
  *      文案只从文案表（app/Services/Texts.php 或 storage/app/texts.json）来，
  *      改这两样都不用发小程序版本
  *
@@ -166,8 +167,9 @@ class HangerRewardService
         }
 
         $date = $this->periodKey($type);
+        $added = 0;
 
-        DB::transaction(function () use ($user, $type, $date, $times, $amount) {
+        DB::transaction(function () use ($user, $type, $date, $times, $amount, &$added) {
             // 锁住用户行再数次数：同一秒连点两下时，第二个请求会等第一个提交完，
             // 数出来的就是"已经领过"（不靠唯一索引报错兜底，报错只是最后一道保险）
             $locked = User::whereKey($user->id)->lockForUpdate()->first();
@@ -188,13 +190,17 @@ class HangerRewardService
                 'amount'      => $amount,
             ]);
 
-            $this->quota->addTotal($locked, $amount);
+            // 实际加了多少：余额到衣架总数上限（config('quota.item_max')）时会少于 amount，甚至 0
+            $added = $this->quota->addTotal($locked, $amount);
         });
 
         $status = $this->status($user->refresh());
 
-        // 提示语**由后端拼好**（用户 2026-09 定：能拼就后端拼），前端拿到直接显示，不自己拼
-        $status['toast'] = $this->texts->get($this->toastKey($type), ['n' => $amount]);
+        // 提示语**由后端拼好**（用户 2026-09 定：能拼就后端拼），前端拿到直接显示，不自己拼。
+        // 数字用"实际加到的"那个 —— 到上限时只加了 2 就说 +2，一个没加就说"已到上限"，别报虚数
+        $status['toast'] = $added > 0
+            ? $this->texts->get($this->toastKey($type), ['n' => $added])
+            : $this->texts->get('reward.capped', ['max' => $this->quota->itemMax()]);
 
         return $status;
     }

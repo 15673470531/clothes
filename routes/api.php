@@ -61,7 +61,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('users/{id}/outfits', [AdminController::class, 'userOutfits']);
     });
 
-    // 赚衣架（2026-09）：「我的」页衣架卡右侧「获取更多」→ 每日签到 +2 / 分享好友 +10
+    // 赚衣架（2026-09）：「我的」页衣架卡点哪都进「获取更多」→ 签到 / 分享群或好友 / 每月免费领取
     // 三个接口出参形状一样（都是当日状态 + 最新衣架余额），领完直接刷新界面
     Route::get('hanger/reward',   [HangerRewardController::class, 'status']);
     Route::post('hanger/checkin', [HangerRewardController::class, 'checkin']);

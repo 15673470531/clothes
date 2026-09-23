@@ -12,7 +12,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  *
  * type 有四种（2026-09）：
  *   checkin  每日签到（按天）
- *   share    分享给好友（按天）
+ *   share    分享群或者好友（按天）
  *   newcomer 新用户每月免费领取（按自然月，**手动点领取** —— 目前页面上真正用的那条）
  *   monthly  每月系统赠送（按自然月自动到账，老口径；配置默认 0，已停用，历史流水还在）
  */
@@ -23,7 +23,7 @@ class HangerReward extends Model
     /** 每日签到 */
     public const TYPE_CHECKIN = 'checkin';
 
-    /** 分享给好友 */
+    /** 分享群或者好友 */
     public const TYPE_SHARE = 'share';
 
     /** 每月系统免费赠送（按自然月自动到账）—— 2026-09 起默认关，见 config('quota.reward_monthly') */
