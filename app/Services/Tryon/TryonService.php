@@ -268,6 +268,19 @@ class TryonService
     {
         $hash = md5($sourceUrl);
 
+        // 这件衣物是不是已经有白底图了（用户在记录页洗过 / 把白底图设成了展示图）
+        //  → 直接用，别再花钱洗一遍；顺手补上缓存行，后面按（衣物 + 原图）查也能命中
+        $item = ClothesItem::where('user_id', $userId)->where('client_id', $itemId)->first();
+        if (!empty($item) && !empty($item->normalized_url)
+            && ((string) $item->image_url === (string) $item->normalized_url || (string) $item->normalized_source === $hash)) {
+            TryonGarment::updateOrCreate(
+                ['user_id' => $userId, 'item_id' => $itemId, 'source_hash' => $hash],
+                ['normalized_url' => (string) $item->normalized_url]
+            );
+
+            return (string) $item->normalized_url;
+        }
+
         $hit = TryonGarment::where('user_id', $userId)
             ->where('item_id', $itemId)
             ->where('source_hash', $hash)

@@ -41,14 +41,17 @@ class Assets
      * key 命名口径：`页面.用途`，方便一眼看出用在哪
      */
     public const DEFAULTS = [
-        // 衣橱页：一件衣物都没有时的空态插画
-        'empty.wardrobe' => 'https://gq-clothes.oss-cn-beijing.aliyuncs.com/assets/202609/if9YFozVp4TykOqFE3nVZAKhTh.webp',
-        // 穿搭页：一套搭配都没有时的空态插画
-        'empty.outfit'   => 'https://gq-clothes.oss-cn-beijing.aliyuncs.com/assets/202609/YqVBftx46ni5EQnapJLyoCOrrd.webp',
-        // 日历页：某天还没记搭配时的空态插画（宽幅）
-        'empty.calendar' => 'https://gq-clothes.oss-cn-beijing.aliyuncs.com/assets/202609/KFZaPYCRYDdUj6irWfzTAu34UW.webp',
-        // 关于页顶部横幅插画
-        'about.hero'     => 'https://gq-clothes.oss-cn-beijing.aliyuncs.com/assets/202609/c4gtwj0nrSHLr1fcQTbp9zB6fi.webp',
+        // ⚠️ 2026-09 真机踩坑后的结论：**默认不下发任何 URL**（空字符串），
+        //    小程序就用**包内的本地图**（images/art/*.png|jpg，见 utils/assets.js 的 LOCAL）：
+        //      - iOS 小程序的 image 组件**不认 webp**（第一版图是 webp，开发者工具能看、真机白屏）
+        //      - 网络图还受"downloadFile 合法域名"限制（OSS 域名没进白名单就加载不出来）
+        //      - 接口不通时也不能让空态变光板
+        //    本地图 = 一定能显示；下面这几个键位留着，哪天想"在服务器上换图、不发版"，
+        //    把 PNG（别用 webp）传到 OSS，再把 URL 填到 storage/app/assets.json 里即可生效。
+        'empty.wardrobe' => '',
+        'empty.outfit'   => '',
+        'empty.calendar' => '',
+        'about.hero'     => '',
     ];
 
     /**

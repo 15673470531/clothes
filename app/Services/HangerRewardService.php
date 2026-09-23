@@ -146,6 +146,19 @@ class HangerRewardService
             $out[$type] = $row;
         }
 
+        // 衣架流水（2026-09 用户要的：赚衣架页下面放一个列表）
+        // 只放**最近若干条 + 总数**：这一页是"能拿多少"的动作页，不是流水账页，
+        // 要翻更早的以后再加分页（现在 20 条足够看出最近在领什么）
+        $out['logs']     = $this->recentLogs($user);
+        $out['logCount'] = HangerRewardLog::query()->where('user_id', $user->id)->count();
+        // 条数超过上限时给一句说明（后端拼好，前端只显示）；没超就是空串
+        $out['logsNote'] = $out['logCount'] > self::LOG_LIMIT
+            ? $this->texts->get('reward.logs_more', ['n' => self::LOG_LIMIT, 'total' => $out['logCount']])
+            : '';
+        // 累计从奖励里拿到过多少（列表标题右边那句小字）；一条都没有就空串
+        $sum = (int) HangerRewardLog::query()->where('user_id', $user->id)->sum('amount');
+        $out['logsTotal'] = $sum > 0 ? $this->texts->get('reward.logs_total', ['n' => $sum]) : '';
+
         // 顺手把最新衣架余额带上：领完直接刷新卡片，不用前端再发一次请求
         $out['hanger'] = $this->quota->summary($user);
 
@@ -213,6 +226,68 @@ class HangerRewardService
             ->where('type', $type)
             ->where('reward_date', $this->periodKey($type))
             ->count();
+    }
+
+    /** 流水列表最多给几条（够看出"最近在领什么"就行） */
+    private const LOG_LIMIT = 20;
+
+    /**
+     * 衣架流水（最近的几条，新的在前）
+     *
+     * 一行 = 领到的一次奖励。**只记"获得"** —— 用掉的（新增衣物／搭配各占 1 个）没记账，
+     * 余额制下那笔账在 users.item_quota 里，不落流水；真要记消耗得另开一张表（用户还没要）。
+     *
+     * 标题/日期都由后端拼好（用户定的"能拼就后端拼"），前端只显示：
+     *   今天 / 昨天 / 9月20日（跨年就带年份），类型名取自文案表
+     *
+     * ⚠️ 两个坑（都在这段代码里处理掉了）：
+     *   1 排序按 **id**（= 领取顺序）。按月的那几种（每月免费领取/老口径每月赠送）
+     *     `reward_date` 记的是**本月 1 号**（那是用来"一个月只发一次"的去重键），
+     *     拿它排序会把今天的领取排到最下面
+     *   2 显示的日期用 **created_at**（真实领取时间），同理 —— 显示 reward_date 会变成"9月1日"骗人
+     */
+    private function recentLogs(User $user): array
+    {
+        return HangerRewardLog::query()
+            ->where('user_id', $user->id)
+            ->orderByDesc('id')
+            ->limit(self::LOG_LIMIT)
+            ->get()
+            ->map(function (HangerRewardLog $row) {
+                $at = $row->created_at ?: $row->reward_date;
+
+                return [
+                    'type'     => $row->type,
+                    'title'    => $this->logTitle($row->type),
+                    'amount'   => (int) $row->amount,
+                    'date'     => $at->toDateString(),
+                    'dateText' => $this->dateText($at),
+                ];
+            })
+            ->values()
+            ->all();
+    }
+
+    /** 流水里那种奖励叫什么（文案表里取；老口径的 monthly 也留着，历史记录照样能显示） */
+    private function logTitle(string $type): string
+    {
+        return $this->texts->get('reward.log_' . $type);
+    }
+
+    /** 哪天领的：今天 / 昨天 / 9月20日 / 2025年9月20日（跨年才带年份） */
+    private function dateText($date): string
+    {
+        $d = $date->toDateString();
+        if ($d === today()->toDateString()) {
+            return '今天';
+        }
+        if ($d === today()->subDay()->toDateString()) {
+            return '昨天';
+        }
+
+        return $date->year === today()->year
+            ? $date->month . '月' . $date->day . '日'
+            : $date->year . '年' . $date->month . '月' . $date->day . '日';
     }
 
     /**

@@ -87,6 +87,9 @@ class ClothesController extends Controller
             'items.*.seasons'   => 'array',
             'items.*.occasions' => 'array',
             'items.*.imageUrl'  => 'nullable|string|max:255',
+            // 洗白底那套（可选，老版本小程序不发这两个字段）
+            'items.*.originalImageUrl' => 'nullable|string|max:255',
+            'items.*.normalizedUrl'    => 'nullable|string|max:255',
             'items.*.createdAt' => 'nullable|integer',
 
             'outfits'              => 'array',
@@ -235,9 +238,37 @@ class ClothesController extends Controller
         ]);
         // 之前被删过又被推上来的，算复活（用户在多端操作时可能出现）
         $item->deleted_at = null;
+
+        // 洗白底那两列（2026-09）：**只看请求里有没有这个键**，不看值是不是空串 ——
+        // 老版本小程序压根不发这两个字段，如果按"空串 = 清空"处理，一推就会把已有的白底图抹掉。
+        //  - originalImageUrl：原图（设为封面后 image_url 是白底图，原图靠它留着）
+        //  - normalizedUrl：白底图；normalized_source 由服务端算（对应哪张原图，换照片自动作废）
+        if (array_key_exists('originalImageUrl', $row)) {
+            $item->original_image_url = $this->str($row['originalImageUrl'], 255);
+        }
+        if (array_key_exists('normalizedUrl', $row)) {
+            $normalized = $this->str($row['normalizedUrl'], 255);
+            $item->normalized_url    = $normalized;
+            $item->normalized_source = empty($normalized)
+                ? ''
+                : md5($item->original_image_url ?: $newUrl);
+        }
+
         $item->save();
 
-        return ($oldUrl !== '' && $oldUrl !== $newUrl) ? [$oldUrl] : [];
+        if ($oldUrl === '' || $oldUrl === $newUrl) {
+            return [];
+        }
+
+        // 换图了要不要删旧对象：**只有这张图现在没人引用**才删
+        // （把白底图设成封面时，旧 image_url 是原图，但它还活在 original_image_url 里 → 不能删，
+        //   否则用户点「切回原图」就是一张 404）
+        $stillUsed = in_array($oldUrl, array_filter([
+            (string) $item->original_image_url,
+            (string) $item->normalized_url,
+        ]), true);
+
+        return $stillUsed ? [] : [$oldUrl];
     }
 
     /**
@@ -338,6 +369,10 @@ class ClothesController extends Controller
             'seasons'   => $i->seasons ?: [],
             'occasions' => $i->occasions ?: [],
             'imageUrl'  => $this->storage->out($i->image_url),
+            // 洗白底（2026-09）：原图 / 白底图 两个地址 + 当前展示图是不是白底图
+            'originalImageUrl' => $this->storage->out($i->original_image_url),
+            'normalizedUrl'    => $this->storage->out($i->normalized_url),
+            'isWhite'          => !empty($i->normalized_url) && (string) $i->image_url === (string) $i->normalized_url,
             // 这张图存在哪：oss = 对象存储，local = 服务器本地盘（小程序格子右下角挂牌用）
             'imageStorage' => $this->storage->driverOf($i->image_url),
             'createdAt' => (int) $i->client_created_at,

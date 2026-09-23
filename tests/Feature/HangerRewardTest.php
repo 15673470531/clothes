@@ -605,4 +605,120 @@ class HangerRewardTest extends TestCase
         $this->postJson('/api/clothes/sync', ['deleted' => ['items' => ['i1']]])->assertJson(['code' => 0]);
         $this->assertSame($max, $user->refresh()->item_quota, '删掉还回来，不看上限');
     }
+
+    /* ------------------------------------------------------------------
+     * 衣架流水（赚衣架页下面那个列表，2026-09 用户要的）
+     * 一行 = 领到的一次奖励；只记"获得"（用掉的不落流水，余额制）
+     * ------------------------------------------------------------------ */
+
+    /**
+     * 场景：领了几笔之后看流水
+     *
+     * 预期：三条记录、**新的在前**、标题和日期由后端拼好（今天领的写"今天"）；
+     *       logCount 是总条数；没超过上限时那句话是空串
+     */
+    public function test_status_returns_hanger_logs(): void
+    {
+        $this->userWith(0);
+
+        $this->postJson('/api/hanger/checkin')->assertOk();
+        $this->postJson('/api/hanger/share')->assertOk();
+        $this->postJson('/api/hanger/newcomer')->assertOk();
+
+        $d = $this->getJson('/api/hanger/reward')->assertOk()->json('data');
+
+        $this->assertSame(3, $d['logCount'], '一共三条记录');
+        // 列表标题右边那句"累计"：所有记录 amount 之和（1 + 2 + 50）
+        $this->assertSame('累计 +' . (1 + 2 + 50) . ' 个', $d['logsTotal']);
+        $logs = $d['logs'];
+        $this->assertCount(3, $logs, '全都在列表里');
+        $this->assertSame('', $d['logsNote'], '没超过上限就不给那句说明');
+
+        $this->assertSame('newcomer', $logs[0]['type'], '最后领的排最前');
+        $this->assertSame('新用户每月免费领取', $logs[0]['title'], '标题后端给');
+        $this->assertSame(50, $logs[0]['amount']);
+        $this->assertSame('今天', $logs[0]['dateText'], '今天领的写"今天"');
+
+        $this->assertSame('share', $logs[1]['type']);
+        $this->assertSame('分享群或者好友', $logs[1]['title']);
+        $this->assertSame('checkin', $logs[2]['type']);
+        $this->assertSame('每日签到', $logs[2]['title']);
+        $this->assertSame((int) config('quota.reward_checkin'), $logs[2]['amount']);
+    }
+
+    /**
+     * 场景：一条记录都没有 / 历史记录的日期怎么写
+     *
+     * 预期：logs 空数组、logCount=0（前端显示空态那句）；昨天写"昨天"，
+     *       更早的同一年写"9月20日"，跨年的带上年份
+     */
+    public function test_logs_empty_and_date_text(): void
+    {
+        $user = $this->userWith(0);
+
+        $d = $this->getJson('/api/hanger/reward')->assertOk()->json('data');
+        $this->assertSame([], $d['logs'], '还没领过 → 空列表');
+        $this->assertSame(0, $d['logCount']);
+
+        $yesterday = today()->subDay();
+        $older     = today()->subDays(3);
+        $lastYear  = today()->subYear();
+
+        foreach ([[$yesterday, 'checkin'], [$older, 'share'], [$lastYear, 'checkin']] as [$day, $type]) {
+            // created_at 才是"真实领取时间"（列表显示用它），reward_date 对按月类型记的是本月 1 号；
+            // created_at 不在 fillable 里，所以 create 之后 forceFill 再存
+            HangerReward::create([
+                'user_id'     => $user->id,
+                'type'        => $type,
+                'reward_date' => $day->toDateString(),
+                'seq'         => 1,
+                'amount'      => 1,
+            ])->forceFill(['created_at' => $day, 'updated_at' => $day])->save();
+        }
+
+        $logs = collect($this->getJson('/api/hanger/reward')->json('data.logs'))
+            ->keyBy(fn ($row) => $row['type'] . '@' . $row['date']);
+
+        $this->assertSame('昨天', $logs['checkin@' . $yesterday->toDateString()]['dateText']);
+        $this->assertSame(
+            $older->year === today()->year
+                ? $older->month . '月' . $older->day . '日'
+                : $older->year . '年' . $older->month . '月' . $older->day . '日',
+            $logs['share@' . $older->toDateString()]['dateText'],
+            '同一年只写月日，跨年才带年份'
+        );
+        $this->assertSame(
+            $lastYear->year . '年' . $lastYear->month . '月' . $lastYear->day . '日',
+            $logs['checkin@' . $lastYear->toDateString()]['dateText'],
+            '去年的记录带年份'
+        );
+    }
+
+    /**
+     * 场景：记录超过上限（20 条）
+     *
+     * 预期：只给最近 20 条，另外给一句"只显示最近 20 条（共 N 条）"
+     */
+    public function test_logs_are_limited_to_twenty(): void
+    {
+        $user = $this->userWith(0);
+
+        for ($i = 0; $i < 25; $i++) {
+            $day = today()->subDays(24 - $i);   // 最后创建的那条是今天
+            HangerReward::create([
+                'user_id'     => $user->id,
+                'type'        => 'checkin',
+                'reward_date' => $day->toDateString(),
+                'seq'         => 1,
+                'amount'      => 1,
+            ])->forceFill(['created_at' => $day, 'updated_at' => $day])->save();
+        }
+
+        $d = $this->getJson('/api/hanger/reward')->assertOk()->json('data');
+
+        $this->assertCount(20, $d['logs'], '最多给 20 条');
+        $this->assertSame(25, $d['logCount'], '总数照实说');
+        $this->assertSame('只显示最近 20 条（共 25 条）', $d['logsNote']);
+        $this->assertSame(today()->toDateString(), $d['logs'][0]['date'], '新的在前（第一条是今天）');
+    }
 }

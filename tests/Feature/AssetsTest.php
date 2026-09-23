@@ -66,8 +66,10 @@ class AssetsTest extends TestCase
 
         $items = $res->json('data.items');
         foreach (['empty.wardrobe', 'empty.outfit', 'empty.calendar', 'about.hero'] as $key) {
-            $this->assertArrayHasKey($key, $items, $key . ' 要下发');
-            $this->assertStringStartsWith('https://', $items[$key], '必须是公网 https 地址（小程序直接加载）');
+            $this->assertArrayHasKey($key, $items, $key . ' 键位要在（值可以是空串）');
+            // 默认空串 = 用小程序包内的本地图（真机踩坑后定的，见 Assets::DEFAULTS 的注释）；
+            // 填了 URL 就必须是 https 的公网地址（小程序 image 直接加载，且不能是 webp）
+            $this->assertTrue($items[$key] === '' || str_starts_with($items[$key], 'https://'));
         }
 
         $this->assertSame(count($items), $res->json('data.count'));

@@ -37,7 +37,17 @@ return [
 
     // 模型名（阿里云百炼）
     'tryon_model' => env('TRYON_MODEL', 'aitryon'),
+    // 归一化（洗白底）用哪个模型。2026-09-24 实测：wan2.7-image 出的最像真拍商品图，
+    // qwen-image-edit 系也能用（-plus 0.2 最便宜）；qwen-image-3.0 会把衣服重绘，别用。
+    'normalize_model' => env('TRYON_NORMALIZE_MODEL', 'wan2.7-image'),
+    // 老名字，仅作兜底（normalize_model 没配时才用它）
     'edit_model' => env('TRYON_EDIT_MODEL', 'qwen-image-edit'),
+
+    /* ---- 洗白底（记录衣物页那个按钮）：跟试穿**解耦**的独立开关 ----
+     * 试穿先藏着，但「洗成白底图」可以单独放出来用（用户 2026-09 定的）。 */
+    'normalize_enabled'     => env('NORMALIZE_ENABLED', false),
+    // 每人每天免费洗几张（配置可改，不用发版）；命中缓存 / 失败都不计次
+    'normalize_daily_limit' => (int) env('NORMALIZE_DAILY_LIMIT', 5),
 
     // 异步任务的轮询节奏
     'poll_interval_ms' => 2000,
