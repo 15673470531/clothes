@@ -214,6 +214,11 @@ class AdminController extends Controller
             'itemCount'    => (int) $u->clothes_items_count,
             'outfitCount'  => (int) $u->clothes_outfits_count,
             'wearCount'    => (int) $u->wear_logs_count,
+            // 衣架两个数（2026-09 用户要的）：总=账号总资产、可用=还能挂几个
+            // 口径跟「我的」页那张衣架卡完全一致（Quota::summary）：总数 = 余额 + 已占用
+            // （已占用就是上面 withCount 出来的件数，软删的自动不算，不多查库）
+            'hangerTotal'      => (int) $u->item_quota,
+            'hangerTotalLimit' => (int) $u->item_quota + (int) $u->clothes_items_count + (int) $u->clothes_outfits_count,
         ])->values();
 
         return $this->ok([

@@ -210,4 +210,30 @@ class AdminUserContentTest extends TestCase
         $this->assertSame(0, $res->json('data.total'));
         $this->assertSame([], $res->json('data.list'));
     }
+
+    /**
+     * 场景：用户名单（GET /api/admin/users）里带衣架两个数（2026-09 用户要的）
+     *
+     * 预期：可用 = users.item_quota；总数 = 余额 + 已占用（衣物 + 搭配，软删的不算），
+     *       跟「我的」页那张衣架卡一个口径（Quota::summary）
+     */
+    public function test_user_list_shows_hanger_numbers(): void
+    {
+        $this->actingAsAdmin();
+        $u = User::factory()->create(['item_quota' => 20, 'is_admin' => false]);
+
+        $this->makeItem($u, 'i1');
+        $this->makeItem($u, 'i2');
+        $this->makeItem($u, 'i3')->delete();   // 软删：不算占用（跟退还衣架的口径一致）
+        $this->makeOutfit($u, 'o1');
+
+        // 名单按 id 倒序兜底，刚建的这个号在第一行
+        $row = $this->getJson('/api/admin/users')->assertOk()->json('data.list.0');
+
+        $this->assertSame($u->id, $row['id'], '第一行就是刚建的号');
+        $this->assertSame(20, $row['hangerTotal'], '可用 = 余额');
+        $this->assertSame(23, $row['hangerTotalLimit'], '总数 = 20 + 2 件衣物 + 1 套搭配');
+        $this->assertSame(2, $row['itemCount'], '件数口径跟衣架一致（软删不算）');
+        $this->assertSame(1, $row['outfitCount']);
+    }
 }
