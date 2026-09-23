@@ -197,6 +197,32 @@ class NormalizeTest extends TestCase
     }
 
     /**
+     * 场景：管理员来洗（is_admin）
+     * 预期：**不限次数**、也不占用计数（客服/自己试效果用）；状态里带 unlimited 标记给前端
+     */
+    public function test_admin_is_not_limited(): void
+    {
+        config(['tryon.normalize_daily_limit' => 1]);
+        [$user, $item] = $this->userWithItem();
+        $user->is_admin = 1;
+        $user->save();
+
+        $this->getJson('/api/items/normalize/status')->assertOk()
+            ->assertJsonPath('data.unlimited', true);
+
+        // 限额 1，但管理员连洗 3 张不同的原图都该通过
+        for ($i = 1; $i <= 3; $i++) {
+            $this->wash($user, $item->client_id, 'https://cdn.example.com/clothes/admin-' . $i . '.jpg')
+                ->assertOk()
+                ->assertJsonPath('code', 0)
+                ->assertJsonPath('data.unlimited', true);
+        }
+
+        $this->assertSame(3, $this->provider->normalizeCalls);
+        $this->assertSame(0, (int) $user->refresh()->normalize_used, '管理员不占免费次数');
+    }
+
+    /**
      * 场景：用户换了照片再洗
      * 预期：指纹变了 → 重新洗（旧的不会被复用），次数 +1
      */

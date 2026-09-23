@@ -125,6 +125,7 @@ class Texts
         'itemEdit.normalize_restored'  => '已切回原图',
         'itemEdit.normalize_left'      => '今天还能洗 {n} 次',
         'itemEdit.normalize_none_left' => '今天洗白底的次数用完了，明天再来',
+        'itemEdit.normalize_unlimited' => '管理员：不限次数',
         'itemEdit.normalize_fail_title' => '没洗出来',
         'itemEdit.normalize_label_orig'  => '原图',
         'itemEdit.normalize_label_white' => '白底图',

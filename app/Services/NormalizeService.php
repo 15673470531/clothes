@@ -50,15 +50,18 @@ class NormalizeService
         return (bool) config('tryon.normalize_enabled');
     }
 
-    /** 入口状态：前端据此决定这个入口显不显示、还剩几次 */
+    /** 入口状态：前端据此决定这个入口显不显示、还剩几次（管理员不限次数） */
     public function status(User $user): array
     {
         $this->refreshDaily($user);
+        $unlimited = $this->isAdmin($user);
 
         return [
             'enabled'    => $this->enabled(),
-            'leftToday'  => $this->leftToday($user),
+            'leftToday'  => $unlimited ? $this->limit() : $this->leftToday($user),
             'dailyLimit' => $this->limit(),
+            // 管理员不限次数：前端据此不再拦人，也不用显示"还剩几次"
+            'unlimited'  => $unlimited,
         ];
     }
 
@@ -111,8 +114,9 @@ class NormalizeService
         }
 
         // ③ 每天免费次数（只在真洗之前才扣，缓存命中上面已经返回了）
+        //    管理员不限次数，也不占用计数（客服/自己试效果用）
         $this->refreshDaily($user);
-        if ((int) $user->normalize_used >= $this->limit()) {
+        if (!$this->isAdmin($user) && (int) $user->normalize_used >= $this->limit()) {
             throw new TryonException(4010, '今天洗白底的次数用完了（每天 ' . $this->limit() . ' 次），明天再来');
         }
 
@@ -126,8 +130,10 @@ class NormalizeService
 
         $this->remember($item, $url, $hash, $sourceUrl);
 
-        $user->normalize_used = (int) $user->normalize_used + 1;
-        $user->save();
+        if (!$this->isAdmin($user)) {
+            $user->normalize_used = (int) $user->normalize_used + 1;
+            $user->save();
+        }
 
         return $this->result($url, $sourceUrl, false, $user);
     }
@@ -140,8 +146,9 @@ class NormalizeService
             'normalizedUrl' => $url,
             'sourceUrl'     => $sourceUrl,
             'cached'        => $cached,
-            'leftToday'     => $this->leftToday($user),
+            'leftToday'     => $this->isAdmin($user) ? $this->limit() : $this->leftToday($user),
             'dailyLimit'    => $this->limit(),
+            'unlimited'     => $this->isAdmin($user),
         ];
     }
 
@@ -240,6 +247,12 @@ class NormalizeService
             $user->normalize_date = $today;
             $user->save();
         }
+    }
+
+    /** 管理员：不限次数（is_admin，跟管理端下钻页同一个标记） */
+    private function isAdmin(User $user): bool
+    {
+        return !empty($user->is_admin);
     }
 
     private function leftToday(User $user): int
