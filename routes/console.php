@@ -17,3 +17,8 @@ use Illuminate\Support\Facades\Schedule;
 // 手动跑：docker compose exec app php artisan quota:reset-daily
 // 只看会重置多少人：docker compose exec app php artisan quota:reset-daily --dry-run
 Schedule::command('quota:reset-daily')->dailyAt('00:05');
+
+// 行为明细只保留30天；仅清理分析事件，不涉及衣物或用户数据。
+Schedule::call(function () {
+    \Illuminate\Support\Facades\DB::table('usage_events')->where('occurred_at', '<', now()->subDays(30)->getTimestampMs())->delete();
+})->dailyAt('03:30')->name('usage-events-prune')->withoutOverlapping();
