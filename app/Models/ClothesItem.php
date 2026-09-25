@@ -21,6 +21,8 @@ class ClothesItem extends Model
         'user_id', 'client_id', 'name', 'category', 'sub',
         'details', 'colors', 'seasons', 'occasions', 'image_url', 'client_created_at',
         'original_image_url', 'normalized_url', 'normalized_source',
+        // 洗白底自动流程（2026-09）：状态 / 这件自己的自动勾选 / 展示图选择
+        'normalize_status', 'normalize_auto', 'cover_choice',
     ];
 
     protected $casts = [
@@ -29,6 +31,7 @@ class ClothesItem extends Model
         'seasons'   => 'array',
         'occasions' => 'array',
         'client_created_at' => 'integer',
+        'normalize_auto'    => 'boolean',
     ];
 
     public function user(): BelongsTo

@@ -33,7 +33,8 @@ services:
     container_name: clothes-worker
     restart: unless-stopped
     working_dir: /var/www/html
-    command: php artisan queue:work --tries=3 --timeout=300 --sleep=2
+    # normalize 队列排前面：洗白底是用户保存后立刻要看的，别被试穿的任务堵在后面
+    command: php artisan queue:work --queue=normalize,default --tries=3 --timeout=300 --sleep=2
     volumes:
       - .:/var/www/html
       - ./docker/php/uploads.ini:/usr/local/etc/php/conf.d/zz-uploads.ini

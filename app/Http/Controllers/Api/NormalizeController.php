@@ -46,13 +46,16 @@ class NormalizeController extends Controller
             // 空地址不在这里拦：交给 NormalizeService 出业务码 4004（"这件衣物还没有照片，先拍一张再洗"），
             // 比 422 的参数错误更像人话（2026-09）
             'imageUrl' => 'nullable|string|max:255',
+            // true = 用户点了「重新生成一张」：跳过缓存真重洗（会花钱、会计次）
+            'force'    => 'nullable|boolean',
         ]);
 
         try {
             $result = $this->normalize->normalize(
                 $request->user(),
                 (string) ($data['itemId'] ?? ''),
-                (string) $data['imageUrl']
+                (string) $data['imageUrl'],
+                (bool) ($data['force'] ?? false)
             );
         } catch (TryonException $e) {
             return $this->fail($e->apiCode(), $e->getMessage());

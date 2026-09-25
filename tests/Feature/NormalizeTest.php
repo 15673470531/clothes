@@ -3,15 +3,18 @@
 namespace Tests\Feature;
 
 use App\Exceptions\TryonException;
+use App\Jobs\RunNormalize;
 use App\Models\ClothesItem;
 use App\Models\TryonGarment;
 use App\Models\TryonTask;
 use App\Models\User;
 use App\Services\ImageStorage;
+use App\Services\NormalizeService;
 use App\Services\Tryon\TryonProvider;
 use App\Services\Tryon\TryonService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Queue;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
 
@@ -391,6 +394,263 @@ class NormalizeTest extends TestCase
         $this->assertSame(1, $this->provider->tryOnCalls);
         $this->assertSame(TryonTask::STATUS_DONE, (string) $task->refresh()->status);
         $this->assertSame($white, (string) $task->normalized_url);
+    }
+
+    // ===== 自动流程（2026-09 用户拍板：默认打开、保存后自动跑、跑完自动换封面）=====
+
+    /**
+     * 保存一件**新衣物**（带照片）→ 自动入队，且不影响保存本身
+     *
+     * 预期：接口 200、normalizeQueued=1、库里这件状态是 queued、派了 RunNormalize
+     */
+    public function test_saving_new_item_queues_auto_normalize(): void
+    {
+        Queue::fake();
+        $this->userWithItem();
+
+        $this->postJson('/api/clothes/sync', ['items' => [[
+            'id'               => 'i2',
+            'name'             => '白衬衫',
+            'category'         => 'top',
+            'imageUrl'         => 'https://cdn.example.com/clothes/2.jpg',
+            'originalImageUrl' => 'https://cdn.example.com/clothes/2.jpg',
+            'normalizeAuto'    => true,
+            'createdAt'        => 1758000001000,
+        ]]])->assertOk()->assertJsonPath('data.normalizeQueued', 1);
+
+        Queue::assertPushed(RunNormalize::class, 1);
+        $this->assertSame('queued', (string) ClothesItem::where('client_id', 'i2')->value('normalize_status'));
+    }
+
+    /**
+     * 用户在记录页关掉「自动洗白底」→ 保存后不入队（不进队列就不会花钱）
+     */
+    public function test_item_with_auto_off_is_not_queued(): void
+    {
+        Queue::fake();
+        $this->userWithItem();
+
+        $this->postJson('/api/clothes/sync', ['items' => [[
+            'id'               => 'i3',
+            'name'             => '外套',
+            'category'         => 'top',
+            'imageUrl'         => 'https://cdn.example.com/clothes/3.jpg',
+            'originalImageUrl' => 'https://cdn.example.com/clothes/3.jpg',
+            'normalizeAuto'    => false,
+            'createdAt'        => 1758000002000,
+        ]]])->assertOk()->assertJsonPath('data.normalizeQueued', 0);
+
+        Queue::assertNotPushed(RunNormalize::class);
+    }
+
+    /**
+     * 只改名字 / 分类（照片没换）→ 不入队
+     *
+     * 这条守的是钱：编辑已有衣物不该触发重洗（一张 0.2 元）。
+     */
+    public function test_editing_name_only_does_not_queue(): void
+    {
+        Queue::fake();
+        [, $item] = $this->userWithItem();
+        $item->forceFill(['original_image_url' => $item->image_url])->save();
+
+        $this->postJson('/api/clothes/sync', ['items' => [[
+            'id'               => 'i1',
+            'name'             => '换了个名字',
+            'category'         => 'bottom',
+            'imageUrl'         => $item->image_url,
+            'originalImageUrl' => $item->original_image_url,
+            'createdAt'        => 1758000000000,
+        ]]])->assertOk()->assertJsonPath('data.normalizeQueued', 0);
+
+        Queue::assertNotPushed(RunNormalize::class);
+    }
+
+    /**
+     * 队列里跑完一件：白底图入库 + **展示图自动换成白底图** + 状态 done + 计一次数
+     */
+    public function test_queued_run_swaps_cover_to_white_and_counts(): void
+    {
+        [$user, $item] = $this->userWithItem();
+        $item->forceFill(['original_image_url' => $item->image_url, 'normalize_auto' => true])->save();
+
+        app(NormalizeService::class)->runQueued((int) $user->id, 'i1');
+
+        $item->refresh();
+        $this->assertSame('done', (string) $item->normalize_status);
+        $this->assertNotEmpty($item->normalized_url);
+        $this->assertSame((string) $item->normalized_url, (string) $item->image_url);   // 自动换封面
+        $this->assertSame(1, $this->provider->normalizeCalls);
+        $this->assertSame(1, (int) $user->fresh()->normalize_used);
+    }
+
+    /**
+     * 用户明确选过「用原图」→ 白底图照样生成并留着，但**不覆盖**封面
+     *
+     * 用户 2026-09 原话：不覆盖，但是自动洗完之后的这个图需要保留。
+     */
+    public function test_cover_choice_orig_keeps_original_but_stores_white(): void
+    {
+        [$user, $item] = $this->userWithItem();
+        $item->forceFill([
+            'original_image_url' => $item->image_url,
+            'normalize_auto'     => true,
+            'cover_choice'       => 'orig',
+        ])->save();
+
+        app(NormalizeService::class)->runQueued((int) $user->id, 'i1');
+
+        $item->refresh();
+        $this->assertSame('done', (string) $item->normalize_status);
+        $this->assertNotEmpty($item->normalized_url);                                          // 白底图留着了
+        $this->assertSame('https://cdn.example.com/clothes/1.jpg', (string) $item->image_url);  // 封面还是原图
+    }
+
+    /**
+     * 今天 10 张用完了 → 这件标 skipped（不报错、不重试烧钱），第二天惰性补洗
+     */
+    public function test_quota_exhausted_marks_skipped(): void
+    {
+        [$user, $item] = $this->userWithItem();
+        $user->forceFill(['normalize_used' => 5, 'normalize_date' => today()->toDateString()])->save();
+        $item->forceFill(['original_image_url' => $item->image_url, 'normalize_auto' => true])->save();
+
+        app(NormalizeService::class)->runQueued((int) $user->id, 'i1');
+
+        $item->refresh();
+        $this->assertSame('skipped', (string) $item->normalize_status);
+        $this->assertSame(0, $this->provider->normalizeCalls);              // 一分钱没花
+    }
+
+    /**
+     * 幂等：同一张原图重复投递（最常见的浪费）→ 第二次直接 done，不调供应商
+     */
+    public function test_repeat_dispatch_is_idempotent(): void
+    {
+        [$user, $item] = $this->userWithItem();
+        $item->forceFill(['original_image_url' => $item->image_url, 'normalize_auto' => true])->save();
+
+        $svc = app(NormalizeService::class);
+        $svc->runQueued((int) $user->id, 'i1');
+        $svc->runQueued((int) $user->id, 'i1');
+
+        $this->assertSame(1, $this->provider->normalizeCalls);
+        $this->assertSame(1, (int) $user->fresh()->normalize_used);
+    }
+
+    /**
+     * 惰性补洗：进衣橱（GET sync）会把"当天没排上（skipped）"的接着洗，5 分钟内不重复扫
+     */
+    public function test_pull_tops_up_skipped_items_with_throttle(): void
+    {
+        Queue::fake();
+        [$user, $item] = $this->userWithItem();
+        $item->forceFill([
+            'original_image_url' => $item->image_url,
+            'normalize_auto'     => true,
+            'normalize_status'   => 'skipped',      // 昨天额度用完没洗上
+        ])->save();
+
+        $this->getJson('/api/clothes/sync')->assertOk();
+        Queue::assertPushed(RunNormalize::class, 1);
+
+        // 5 分钟节流：再拉一次不再重复排队
+        Queue::fake();
+        $this->getJson('/api/clothes/sync')->assertOk();
+        Queue::assertNotPushed(RunNormalize::class);
+    }
+
+    /**
+     * ★ A 方案（用户 2026-09 拍板）：**老衣物不主动回补洗**
+     *
+     * 老衣物状态是空串（从没洗过），回补开关默认关 → 进衣橱不该把它排进队列。
+     * 这条守的是钱：一发版不能让用户"没点任何东西也在花钱"。
+     */
+    public function test_old_items_are_not_backfilled_by_default(): void
+    {
+        Queue::fake();
+        [$user, $item] = $this->userWithItem();
+        $item->forceFill(['original_image_url' => $item->image_url, 'normalize_auto' => true, 'normalize_status' => ''])->save();
+
+        $this->getJson('/api/clothes/sync')->assertOk();
+
+        Queue::assertNotPushed(RunNormalize::class);
+    }
+
+    /** 回补开关打开时才会捡老衣物（留一个开关的用例，默认关） */
+    public function test_backfill_switch_turns_old_items_on(): void
+    {
+        Queue::fake();
+        config(['tryon.normalize_auto_backfill' => true]);
+
+        [$user, $item] = $this->userWithItem();
+        $item->forceFill(['original_image_url' => $item->image_url, 'normalize_auto' => true, 'normalize_status' => ''])->save();
+
+        $this->getJson('/api/clothes/sync')->assertOk();
+
+        Queue::assertPushed(RunNormalize::class, 1);
+    }
+
+    /**
+     * 老衣物想洗也有明确的动作：用户在这件上把「自动洗白底」从关改成开 → 入队
+     */
+    public function test_turning_auto_on_for_old_item_queues_it(): void
+    {
+        Queue::fake();
+        [$user, $item] = $this->userWithItem();
+        $item->forceFill([
+            'original_image_url' => $item->image_url,
+            'normalize_auto'     => false,     // 原来是关的
+            'normalize_status'   => '',
+        ])->save();
+
+        $this->postJson('/api/clothes/sync', ['items' => [[
+            'id'               => 'i1',
+            'name'             => '牛仔裤',
+            'category'         => 'bottom',
+            'imageUrl'         => $item->image_url,
+            'originalImageUrl' => $item->original_image_url,
+            'normalizeAuto'    => true,        // 用户打开了
+            'createdAt'        => 1758000000000,
+        ]]])->assertOk()->assertJsonPath('data.normalizeQueued', 1);
+
+        Queue::assertPushed(RunNormalize::class, 1);
+    }
+
+    /**
+     * 卡在 queued 太久（worker 没跑 / 队列被清）→ 进衣橱时重排一次，不让那行提示一直挂着
+     */
+    public function test_stuck_queued_items_are_requeued(): void
+    {
+        Queue::fake();
+        [$user, $item] = $this->userWithItem();
+        $item->forceFill([
+            'original_image_url' => $item->image_url,
+            'normalize_auto'     => true,
+            'normalize_status'   => 'queued',
+        ])->save();
+        // 假装这是 40 分钟前卡住的（updated_at 手动往回拨）
+        ClothesItem::where('id', $item->id)->update(['updated_at' => now()->subMinutes(40)]);
+
+        $this->getJson('/api/clothes/sync')->assertOk();
+
+        Queue::assertPushed(RunNormalize::class, 1);
+    }
+
+    /**
+     * 手动「重新生成一张」带 force → 跳过缓存真的重洗一次（会花钱计次，这是用户要的）
+     */
+    public function test_manual_force_rewashes(): void
+    {
+        [$user, $item] = $this->userWithItem();
+        $item->forceFill(['original_image_url' => $item->image_url, 'normalize_auto' => true])->save();
+
+        $svc = app(NormalizeService::class);
+        $svc->normalize($user, 'i1', (string) $item->image_url);              // 第一次：真洗
+        $svc->normalize($user, 'i1', (string) $item->image_url);              // 第二次：命中缓存
+        $svc->normalize($user, 'i1', (string) $item->image_url, true);        // 第三次：force 重洗
+
+        $this->assertSame(2, $this->provider->normalizeCalls);
     }
 }
 
