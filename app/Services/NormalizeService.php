@@ -3,10 +3,12 @@
 namespace App\Services;
 
 use App\Exceptions\TryonException;
+use App\Jobs\RunNormalize;
 use App\Models\ClothesItem;
 use App\Models\TryonGarment;
 use App\Models\User;
 use App\Services\Tryon\TryonProvider;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
@@ -25,8 +27,13 @@ use Illuminate\Support\Facades\Log;
  *  2 **命中缓存 / 失败都不算次数**：每天 N 次免费说的是"真烧了一次模型调用"
  *  3 **失败不留痕**：抛异常给控制器转成 {code,msg}，计数不动、库里不写半截数据
  *
- * 为什么同步（不排队）：出图 15~20 秒，用户在记录页盯着按钮，转圈等他更能接受；
- * 走队列就得常驻 worker（试穿现在是隐藏状态，不想为这个功能再拉一个依赖）。
+ * 两条路（2026-09 用户拍板）：
+ *  - **自动**（默认开）：保存衣物后入队、worker 后台跑，用户不用等；跑完把展示图自动换成白底图
+ *    （用户明确选过「用原图」的**不覆盖**，白底图照样留着，随时能切回）。每天 10 张，
+ *    当天用完了就标 skipped，第二天打开衣橱惰性补洗。
+ *  - **手动**（保留入口）：记录页点「重新生成一张」走同步接口，盯着转圈 15~20 秒出对比图 —— 重试/挑图用它最直观。
+ *
+ * 队列单独一条（config('tryon.queue') 之外的 normalize），不跟试穿抢 worker。
  */
 class NormalizeService
 {
@@ -62,6 +69,8 @@ class NormalizeService
             'dailyLimit' => $this->limit(),
             // 管理员不限次数：前端据此不再拦人，也不用显示"还剩几次"
             'unlimited'  => $unlimited,
+            // 自动洗的总闸（前端据此显示"自动已开启/已关闭"和那句说明）
+            'auto'       => $this->autoEnabled(),
         ];
     }
 
@@ -70,9 +79,10 @@ class NormalizeService
      *
      * @param string $itemId    已有衣物的 client_id；记录页里还没保存的可以传空串
      * @param string $sourceUrl 要洗的原图（必须是我们 OSS 的公网 https 直链）
+     * @param bool   $force     true = 用户点了「重新生成一张」：跳过两层缓存真的重洗一次（花钱、计次）
      * @return array{normalizedUrl:string,sourceUrl:string,cached:bool,leftToday:int}
      */
-    public function normalize(User $user, string $itemId, string $sourceUrl): array
+    public function normalize(User $user, string $itemId, string $sourceUrl, bool $force = false): array
     {
         if (!$this->enabled()) {
             throw new TryonException(4009, '洗白底的功能还没开放');
@@ -94,8 +104,8 @@ class NormalizeService
             throw new TryonException(4004, '这件衣物不在了，存一下再洗');
         }
 
-        // ① 这件衣物已经洗过同一张原图：直接给，不花钱也不计次
-        if (!empty($item) && !empty($item->normalized_url) && (string) $item->normalized_source === $hash) {
+        // ① 这件衣物已经洗过同一张原图：直接给，不花钱也不计次（force = 用户要重洗，跳过）
+        if (!$force && !empty($item) && !empty($item->normalized_url) && (string) $item->normalized_source === $hash) {
             return $this->result((string) $item->normalized_url, $sourceUrl, true, $user);
         }
 
@@ -107,7 +117,7 @@ class NormalizeService
             ->where('source_hash', $hash)
             ->first();
 
-        if (!empty($hit) && !empty($hit->normalized_url)) {
+        if (!$force && !empty($hit) && !empty($hit->normalized_url)) {
             $this->remember($item, (string) $hit->normalized_url, $hash, $sourceUrl);
 
             return $this->result((string) $hit->normalized_url, $sourceUrl, true, $user);
@@ -136,6 +146,211 @@ class NormalizeService
         }
 
         return $this->result($url, $sourceUrl, false, $user);
+    }
+
+    // ===== 自动流程（保存后自动洗，2026-09）=====
+
+    /** 自动洗的总闸：功能开着 + 自动开关开着 */
+    public function autoEnabled(): bool
+    {
+        return $this->enabled() && (bool) config('tryon.normalize_auto');
+    }
+
+    /**
+     * 把"该洗还没洗"的衣物丢进队列
+     *
+     * @param  ClothesItem[]  $items
+     * @return int 实际入队件数
+     */
+    public function queue(User $user, array $items): int
+    {
+        $n = 0;
+
+        foreach ($items as $item) {
+            if (empty($item) || empty($item->client_id) || !$this->shouldWash($item)) {
+                continue;
+            }
+
+            $item->normalize_status = 'queued';
+            $item->save();
+
+            RunNormalize::dispatch((int) $user->id, (string) $item->client_id);
+            $n++;
+        }
+
+        return $n;
+    }
+
+    /**
+     * 这件衣物现在该不该自动洗（幂等全在这）
+     *
+     * 挡住四种白花钱的情况：总闸关着 / 用户在这件上关了自动 / 压根没有照片 /
+     * 这张原图已经洗过（normalized_source 对得上）或正在排队。
+     */
+    private function shouldWash(ClothesItem $item): bool
+    {
+        if (!$this->autoEnabled() || !$item->normalize_auto) {
+            return false;
+        }
+
+        $src = $this->sourceOf($item);
+        if (empty($src)) {
+            return false;
+        }
+
+        if (!empty($item->normalized_url) && (string) $item->normalized_source === md5($src)) {
+            return false;
+        }
+
+        return !in_array((string) $item->normalize_status, ['queued', 'running'], true);
+    }
+
+    /** 要洗的原图：original_image_url 优先（展示图可能已经是白底图了） */
+    private function sourceOf(ClothesItem $item): string
+    {
+        return trim((string) ($item->original_image_url ?: $item->image_url));
+    }
+
+    /**
+     * 队列里跑一件（RunNormalize 调它）
+     *
+     * 幂等：这件已经洗好同一张原图（重复投递 / 别处先跑完）→ 直接标 done，不花钱。
+     * 额度：NormalizeService::normalize() 里统一拦（4010 = 今天用完）。
+     */
+    public function runQueued(int $userId, string $itemId): void
+    {
+        $user = User::find($userId);
+        $item = ClothesItem::where('user_id', $userId)->where('client_id', $itemId)->first();
+
+        // 衣物/用户已经删了：什么都不做（不重试、不报错）
+        if (empty($user) || empty($item)) {
+            return;
+        }
+
+        // 用户在别处把这件的自动关掉、或功能被关了：退回不用洗的状态
+        if (!$this->autoEnabled() || !$item->normalize_auto) {
+            $this->mark($item, '');
+
+            return;
+        }
+
+        $src = $this->sourceOf($item);
+        if (empty($src)) {
+            $this->mark($item, 'skipped');
+
+            return;
+        }
+
+        // 已经洗好同一张原图 → 完成（重复投递常见，这条是省钱的关键）
+        if (!empty($item->normalized_url) && (string) $item->normalized_source === md5($src)) {
+            $this->mark($item, 'done');
+
+            return;
+        }
+
+        $this->mark($item, 'running');
+
+        try {
+            $this->normalize($user, $itemId, $src);
+        } catch (TryonException $e) {
+            match ($e->apiCode()) {
+                4010    => $this->mark($item, 'skipped'),   // 今天 10 张用完了：明天惰性补洗
+                4009    => $this->mark($item, ''),          // 功能被关了：什么都不做
+                default => throw $e,                        // 其它错误交给 job 重试（失败不计费）
+            };
+
+            return;
+        }
+
+        // 自动替换封面：**用户明确选过「用原图」的就不动**（白底图照样留着，随时能切回去）
+        $item->refresh();
+        if ((string) $item->cover_choice !== 'orig' && !empty($item->normalized_url)
+            && (string) $item->image_url !== (string) $item->normalized_url) {
+            $item->image_url = (string) $item->normalized_url;
+            $item->save();
+        }
+
+        $this->mark($item, 'done');
+    }
+
+    /**
+     * 惰性补洗：把"开着自动、还没洗好"的衣物按今天的剩余额度补进队列
+     *
+     * 为什么不做定时任务：跟「每月赠送」一个套路 —— 用户打开衣橱/我的页时顺手补，
+     * 漏不掉也不用运维 cron。节流 5 分钟，免得每次刷新都扫表 + 排队。
+     * 只捡 '' 和 skipped（今天没排上的）；failed 不自动重试（可能是个洗不动的图，留给手动）。
+     */
+    public function topUp(User $user): int
+    {
+        if (!$this->autoEnabled()) {
+            return 0;
+        }
+
+        $key = 'norm_topup_' . (int) $user->id;
+        if (Cache::has($key)) {
+            return 0;
+        }
+        Cache::put($key, 1, now()->addMinutes(5));
+
+        $left = $this->isAdmin($user) ? 20 : $this->leftToday($user);
+        if ($left <= 0) {
+            return 0;
+        }
+
+        $stuckBefore = now()->subMinutes($this->stuckMinutes());
+
+        $rows = ClothesItem::where('user_id', (int) $user->id)
+            ->where('normalize_auto', true)
+            ->where(function ($q) use ($stuckBefore) {
+                // ① 之前排过、当天没排上（明天接着洗）—— 这是"第二天自动接着洗"那条
+                $q->where('normalize_status', 'skipped');
+
+                // ② 卡在 queued 太久：worker 没跑 / 队列被清 / 任务丢了 → 重排一次。
+                //    runQueued() 有幂等（同一张原图洗过就直接 done），所以重排不会重复花钱
+                $q->orWhere(function ($qq) use ($stuckBefore) {
+                    $qq->where('normalize_status', 'queued')->where('updated_at', '<', $stuckBefore);
+                });
+
+                // ③ 从没洗过的老衣物：**只有开了回补开关才捡**（用户 2026-09 拍板默认关）
+                if ((bool) config('tryon.normalize_auto_backfill')) {
+                    $q->orWhere('normalize_status', '');
+                }
+            })
+            ->orderBy('id')
+            ->limit((int) min($left, 20))
+            ->get()
+            ->all();
+
+        // 卡住的那批先退回"待洗"，否则 shouldWash() 会因为状态是 queued 直接挡掉
+        foreach ($rows as $item) {
+            if ((string) $item->normalize_status === 'queued') {
+                $this->mark($item, '');
+            }
+        }
+
+        return $this->queue($user, $rows);
+    }
+
+    /** 队列两次都没成：钉在失败态（前端显示可手动重试） */
+    public function markFailed(int $userId, string $itemId, string $error): void
+    {
+        $item = ClothesItem::where('user_id', $userId)->where('client_id', $itemId)->first();
+        if (empty($item)) {
+            return;
+        }
+
+        $this->mark($item, 'failed');
+        Log::warning('[normalize] 自动洗白底失败', ['item' => $itemId, 'err' => mb_substr($error, 0, 200)]);
+    }
+
+    private function mark(ClothesItem $item, string $status): void
+    {
+        if ((string) $item->normalize_status === $status) {
+            return;
+        }
+
+        $item->normalize_status = $status;
+        $item->save();
     }
 
     // ===== 内部 =====
@@ -263,5 +478,11 @@ class NormalizeService
     private function limit(): int
     {
         return max(0, (int) config('tryon.normalize_daily_limit'));
+    }
+
+    /** 队列里卡多久算"任务丢了"（分钟） */
+    private function stuckMinutes(): int
+    {
+        return max(5, (int) config('tryon.normalize_stuck_minutes'));
     }
 }

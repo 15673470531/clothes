@@ -45,9 +45,25 @@ return [
 
     /* ---- 洗白底（记录衣物页那个按钮）：跟试穿**解耦**的独立开关 ----
      * 试穿先藏着，但「洗成白底图」可以单独放出来用（用户 2026-09 定的）。 */
-    'normalize_enabled'     => env('NORMALIZE_ENABLED', false),
+    // 洗白底开关（2026-09 用户拍板：默认打开）
+    'normalize_enabled'     => env('NORMALIZE_ENABLED', true),
     // 每人每天免费洗几张（配置可改，不用发版）；命中缓存 / 失败都不计次
-    'normalize_daily_limit' => (int) env('NORMALIZE_DAILY_LIMIT', 5),
+    // 每人每天最多洗几张（用户定：10 张；失败不计费也不计次）
+    'normalize_daily_limit' => (int) env('NORMALIZE_DAILY_LIMIT', 10),
+
+    // 自动洗白底总闸（2026-09）：关掉 = 保存衣物不再自动跑，但手动「重新生成」还能用
+    'normalize_auto'        => env('NORMALIZE_AUTO', true),
+
+    // 洗白底走哪个队列。**单独一个队列**，别跟试穿挤在一起（worker 要监听 normalize,default）
+    'normalize_queue'       => env('NORMALIZE_QUEUE', 'normalize'),
+
+    // 要不要"回补老衣物"（2026-09 用户拍板：**默认关**）
+    //   关着 = 只自动洗"部署之后新增 / 换了照片"的衣物；老衣物不主动补洗
+    //   （否则一发版，用户没点任何东西也在按每天上限花钱）
+    'normalize_auto_backfill' => env('NORMALIZE_AUTO_BACKFILL', false),
+
+    // 队列里卡住多久算"任务丢了"（worker 没跑 / 队列被清）→ 惰性补洗时重排一次
+    'normalize_stuck_minutes' => (int) env('NORMALIZE_STUCK_MINUTES', 30),
 
     // 异步任务的轮询节奏
     'poll_interval_ms' => 2000,

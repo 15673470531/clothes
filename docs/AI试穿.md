@@ -196,36 +196,59 @@ docker compose exec app php artisan tryon:normalize https://gq-clothes.oss-cn-be
 `aitryon` 0.20（免费 400 张）、`aitryon-plus` 0.50。免费额度有效期 90 天（自开通百炼/模型发布较晚者起算），
 **失败不计费也不扣额度**。
 
-## 九、洗白底（记录衣物页那个入口 · 2026-09）
+## 九、洗白底（记录衣物页 · 2026-09 · **已改成自动跑**）
 
-试穿链路里的「归一化」被单独拎出来给用户用了：记录衣物页底部一行「洗成白底图（去杂物）」，
-洗完弹对比层（左原图 / 右白底图），**由用户决定要不要拿白底图当封面**，原图永远留着。
-
-**跟试穿解耦**：独立开关 `NORMALIZE_ENABLED`（默认关）。试穿还藏着时，这个功能可以单独放出来。
+试穿链路里的「归一化」被单独拎出来给用户用了：记录衣物页那一块「自动洗白底」。
+用户 2026-09-24 拍板的口径是**默认打开、保存衣物后自动跑、跑完自动把封面换成白底图**，
+所以它现在是「自动为主、手动兜底」：
 
 | 项 | 口径 |
 |---|---|
+| 自动还是手动 | **保存衣物后自动入队**（新增衣物 / 换了照片才洗；改名字、换分类不洗） |
+| 开关 | `NORMALIZE_ENABLED`（默认 **true**，前端入口 + 自动流程一起受它管）；`NORMALIZE_AUTO`（默认 true，只关"自动跑"，手动还能用） |
 | 模型 | `wan2.7-image`（`TRYON_NORMALIZE_MODEL` 可改；`TRYON_EDIT_MODEL` 只是兜底老名字） |
-| 每人每天 | **5 次免费**（`NORMALIZE_DAILY_LIMIT`，改配置即生效，不用发版） |
+| 每人每天 | **10 张**（`NORMALIZE_DAILY_LIMIT`，改配置即生效，不用发版） |
+| 队列 | 单独一条 `normalize`（`NORMALIZE_QUEUE`）→ worker 必须监听：`queue:work --queue=normalize,default` |
 | 计次规则 | **只有真烧了一次模型调用才计**：命中缓存不计、失败不计 |
 | 缓存 | 同一件衣物 + 同一张原图只洗一次（复用 `tryon_garments` 表，试穿链路共用） |
-| 接口 | `GET /api/items/normalize/status`、`POST /api/items/normalize`（**同步**，15~20 秒） |
+| 接口 | `GET /api/items/normalize/status`（多回一个 `auto`）、`POST /api/items/normalize`（手动，**同步** 15~20 秒，带 `force` 可跳过缓存重洗） |
 | 业务码 | 4004 没照片 / 找不到 · 4008 生成失败 · 4009 功能没开 · 4010 今天次数用完 |
-| 存哪 | `clothes_items.original_image_url`（原图）/ `normalized_url`（白底图）/ `normalized_source`（原图 md5，换照片自动作废） |
+| 存哪 | `clothes_items.original_image_url`（原图）/ `normalized_url`（白底图）/ `normalized_source`（原图 md5，换照片自动作废）/ `normalize_status`（queued·running·done·failed·skipped）/ `normalize_auto`（这件要不要自动洗）/ `cover_choice`（`orig` = 用户明确要用原图，自动洗完**不覆盖**封面） |
 
-几个必须守住的点（都有测试钉着，见 `tests/Feature/NormalizeTest.php`）：
+自动流程（一句话）：`push` 保存 → 事务提交后按"照片变了没"入队 → `RunNormalize` job 调
+`NormalizeService::runQueued()` → 洗完写白底图 + 状态 done + **自动把 `image_url` 换成白底图**
+（`cover_choice='orig'` 时只存不换）→ 列表顶部那行「N 件白底图正在生成」跟着归零。
 
-1. **别重复花钱**：洗过一次再点，直接给缓存（不调供应商、不计次）；试穿链路发现这件衣物已经有
-   白底图也直接复用（`TryonService::normalized` 里那段判断）。
+几个必须守住的点（都有测试钉着，见 `tests/Feature/NormalizeTest.php`，22 条）：
+
+1. **别重复花钱**：洗过一次再点/再投递，直接给缓存（不调供应商、不计次）；试穿链路发现这件衣物已经有
+   白底图也直接复用（`TryonService::normalized` 里那段判断）；`runQueued()` 开头还有一道幂等。
 2. **原图不能删**：用户把白底图设成封面后 `image_url` 会变成白底图，旧的 `image_url`（原图）还活在
    `original_image_url` 里 —— `ClothesController::upsertItem` 只有在"这张图没人引用"时才删 OSS 对象。
 3. **老版本小程序不能把白底图推没**：`push` 里按"请求里有没有 `originalImageUrl`/`normalizedUrl` 这个键"
    决定改不改，不看值是不是空串（旧客户端压根不发这两个字段）。
 4. **白底图要压**：wan2.7 出的是 6~7MB 的 2K PNG，服务端用 GD 压到长边 1600、转 JPEG（压不动就原样存，
    绝不让压图把功能弄挂）。
+5. **今天 10 张用完了不硬洗**：这件标 `skipped`，**第二天打开衣橱时惰性补洗**（`pull` 里调 `topUp()`，
+   节流 5 分钟）——跟「每月赠送」一个套路，不用定时任务也不会漏。`failed` 不自动重试（可能是个洗不动的图）。
+5.5 **老衣物不主动回补洗**（用户 2026-09 拍板，方案 A）：`NORMALIZE_AUTO_BACKFILL` **默认 false** ——
+   惰性补洗只捡 `skipped`（当天没排上的）和卡了 30 分钟以上的 `queued`（worker 没跑/任务丢了，重排一次），
+   **不捡状态为空的老衣物**。否则一发版，所有老用户"没点任何东西"也会按每天上限被洗（真花钱）。
+   老衣物想洗有两个明确动作：① 在这件上把「自动洗白底」从关改成开（`push` 会入队）② 手动「重新生成一张」。
+6. **只比"照片本身"**：`upsertItem` 用 `original_image_url ?: image_url` 的前后指纹判断要不要洗 ——
+   只比 `image_url` 会把「把封面切成白底图」也当成换图，白洗一次（0.2 元）。
 
-上线顺序：**后端先发**（迁移加 3 列 + users 两列计数 → 接口 → 开关默认关）→ 小程序后发 →
-想放出来时把线上 `.env` 的 `NORMALIZE_ENABLED` 改 `true` + `php artisan config:clear`（不用发版）。
+前端（`pages/item-edit`）那块现在是三段：**勾选行**（这件要不要自动洗，默认开）+ **说明行**
+（用户点名要的：会自动跑、每天几张、原图留着；数字由后端下发）+ **状态行**
+（排队中 / 生成中 / 已生成 · 点开看对比换封面 / 失败 · 点它重试）。衣橱列表**不放格子角标**，
+改成顶部一行总提示「N 件白底图正在生成，好了会自动换上」（用户 2026-09 选的方案 6：角标只存在十几秒，
+一闪而过看不见，而且跟「照片存哪了」的圆点挤在同一角容易混淆）；有活干的时候页面每 7 秒补拉一次数据
+（最多 12 轮，洗完自己停），用户不用手动刷新就能看到换上白底图。
+
+上线顺序：**后端先发**（迁移 `2026_09_24_000003` 加 3 列 → 接口 → worker 换成
+`--queue=normalize,default` 并 **`--force-recreate` 重启**）→ 小程序后发。
+线上 `.env`：`NORMALIZE_ENABLED=true`、`NORMALIZE_AUTO=true`、`NORMALIZE_DAILY_LIMIT=10`。
+一键全停：`NORMALIZE_ENABLED=false` + `config:clear`（入口和自动流程一起停）。
 
 ⚠️ **跑测试的坑（血泪）**：本地 `docker compose exec app php artisan test` 时，compose 注入的
 `DB_CONNECTION=mysql` 优先级高于 phpunit.xml，测试会连**开发库**并 `migrate:fresh` 把它清空

@@ -9,6 +9,7 @@ use App\Models\ClothesWearLog;
 use App\Models\User;
 use App\Exceptions\QuotaExceededException;
 use App\Services\ImageStorage;
+use App\Services\NormalizeService;
 use App\Services\Quota;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -33,6 +34,7 @@ class ClothesController extends Controller
     public function __construct(
         private readonly ImageStorage $storage,
         private readonly Quota $quota,
+        private readonly NormalizeService $normalize,
     ) {}
 
     /**
@@ -42,6 +44,15 @@ class ClothesController extends Controller
     public function pull(Request $request): JsonResponse
     {
         $uid = (int) $request->user()->id;
+
+        // 洗白底「惰性补洗」（2026-09）：进衣橱顺手把"开着自动、还没洗上"的丢进队列。
+        // 放在这里的原因跟「每月赠送」一样 —— 不用定时任务也不会漏；
+        // 失败绝不能连累拉数据，所以整块包了 try。
+        try {
+            $this->normalize->topUp($request->user());
+        } catch (\Throwable $e) {
+            Log::warning('[normalize] 惰性补洗失败（不影响拉取）', ['err' => mb_substr($e->getMessage(), 0, 200)]);
+        }
 
         $items = ClothesItem::where('user_id', $uid)
             ->orderByDesc('client_created_at')->orderByDesc('id')->get();
@@ -95,6 +106,9 @@ class ClothesController extends Controller
             // 洗白底那套（可选，老版本小程序不发这两个字段）
             'items.*.originalImageUrl' => 'nullable|string|max:255',
             'items.*.normalizedUrl'    => 'nullable|string|max:255',
+            // 自动洗白底（可选，老版本小程序不发）：这件要不要自动洗 + 展示图选的是哪张
+            'items.*.normalizeAuto'    => 'nullable|boolean',
+            'items.*.coverChoice'      => 'nullable|string|in:,orig,white',
             'items.*.createdAt' => 'nullable|integer',
 
             'outfits'              => 'array',
@@ -115,6 +129,7 @@ class ClothesController extends Controller
 
         $counts = ['items' => 0, 'outfits' => 0, 'wears' => 0, 'deletedItems' => 0, 'deletedOutfits' => 0];
         $staleUrls = [];   // 事务提交后再删的 OSS 对象
+        $washIds = [];     // 事务提交后再入队的"要洗白底的衣物"（新增 / 换了照片）
 
         // 顺序很重要（2026-09 起：衣架）：
         //   ① 先删 —— 删掉一件衣物/一套搭配，那个衣架就腾出来了（总额 +1）
@@ -123,7 +138,7 @@ class ClothesController extends Controller
         // 先还再扣，「删一件再加一件」在同一批里就能走通；衣架不够时整批不写库（不做半个批次）。
         // 额度在事务里算，并且先把用户行 lockForUpdate 锁住，免得同一秒两批请求各扣一次。
         try {
-            DB::transaction(function () use ($data, $uid, &$counts, &$staleUrls) {
+            DB::transaction(function () use ($data, $uid, &$counts, &$staleUrls, &$washIds) {
                 $freed = 0;   // 这一批腾出来的衣架数
 
                 foreach ($data['deleted']['items'] ?? [] as $cid) {
@@ -152,7 +167,12 @@ class ClothesController extends Controller
                 );
 
                 foreach ($data['items'] ?? [] as $row) {
-                    $staleUrls = array_merge($staleUrls, $this->upsertItem($uid, $row));
+                    $up = $this->upsertItem($uid, $row);
+                    $staleUrls = array_merge($staleUrls, $up['urls']);
+                    // 新增衣物 / 换了照片 → 待会儿丢进洗白底队列（改名字、换分类不洗）
+                    if ($up['wash']) {
+                        $washIds[] = (string) $row['id'];
+                    }
                     $counts['items']++;
                 }
 
@@ -178,7 +198,19 @@ class ClothesController extends Controller
             $this->storage->deleteByUrl($url);
         }
 
-        return $this->ok(['counts' => $counts]);
+        // 洗白底自动跑（2026-09 用户定：保存后自动洗、洗好自动换封面）
+        // 放在事务外：入队失败绝不能让已经保存好的衣物回滚；钱也只花在真正要洗的件上
+        $queued = 0;
+        if (!empty($washIds)) {
+            try {
+                $rows = ClothesItem::where('user_id', $uid)->whereIn('client_id', $washIds)->get()->all();
+                $queued = $this->normalize->queue($request->user(), $rows);
+            } catch (\Throwable $e) {
+                Log::warning('[normalize] 入队失败（衣物已保存好了）', ['err' => mb_substr($e->getMessage(), 0, 200)]);
+            }
+        }
+
+        return $this->ok(['counts' => $counts, 'normalizeQueued' => $queued]);
     }
 
     // ===== 内部 =====
@@ -225,6 +257,11 @@ class ClothesController extends Controller
      * 写一条衣物（按 user_id + client_id upsert）
      * @return array 需要清理的旧图地址（换了图才非空）
      */
+    /**
+     * 写一件衣物（按 user_id + client_id upsert）
+     *
+     * @return array{urls: array, wash: bool} urls = 要清理的旧图；wash = 这次要不要自动洗白底
+     */
     private function upsertItem(int $uid, array $row): array
     {
         $item = ClothesItem::withTrashed()->firstOrNew(['user_id' => $uid, 'client_id' => $row['id']]);
@@ -234,6 +271,10 @@ class ClothesController extends Controller
         }
         $oldUrl = (string) $item->image_url;
         $newUrl = (string) ($row['imageUrl'] ?? '');
+        // 改之前的"照片本身"（原图优先）：判断这次是不是换了照片，
+        // 只比 image_url 会把「把封面切成白底图」也当成换图 → 白洗一次（花钱）
+        $srcBefore = trim((string) ($item->original_image_url ?: $item->image_url));
+        $autoBefore = (bool) $item->normalize_auto;
 
         $item->fill([
             'name'              => $this->str($row['name'] ?? '', 64),
@@ -263,10 +304,30 @@ class ClothesController extends Controller
                 : md5($item->original_image_url ?: $newUrl);
         }
 
+        // 自动洗白底的两个字段（2026-09）：老版本小程序不发这两个键 → 保持原样
+        if (array_key_exists('normalizeAuto', $row)) {
+            $item->normalize_auto = (bool) $row['normalizeAuto'];
+        }
+        if (array_key_exists('coverChoice', $row)) {
+            // 'orig' = 用户明确要用原图 → 自动洗好之后**不覆盖**封面（白底图照样留着）
+            $item->cover_choice = $this->str($row['coverChoice'], 8) === 'orig' ? 'orig' : '';
+        }
+
         $item->save();
 
+        // 这次要不要洗白底：换的是"照片本身"才洗（新衣物也算）
+        $srcAfter = trim((string) ($item->original_image_url ?: $item->image_url));
+        $wash = ($srcAfter !== '' && $srcAfter !== $srcBefore);
+
+        // 另外：用户在这件上把「自动洗白底」从**关**改成**开** = 明示要洗（老衣物想洗就走这个动作）。
+        // 没这一条，老衣物（照片没换）永远进不了队列 —— 因为回补默认是关的。
+        // 反过来说明：从开改成关不会触发任何洗，也不会清掉已有的白底图。
+        if ($srcAfter !== '' && !empty($item->normalize_auto) && !$autoBefore) {
+            $wash = true;
+        }
+
         if ($oldUrl === '' || $oldUrl === $newUrl) {
-            return [];
+            return ['urls' => [], 'wash' => $wash];
         }
 
         // 换图了要不要删旧对象：**只有这张图现在没人引用**才删
@@ -277,7 +338,7 @@ class ClothesController extends Controller
             (string) $item->normalized_url,
         ]), true);
 
-        return $stillUsed ? [] : [$oldUrl];
+        return ['urls' => $stillUsed ? [] : [$oldUrl], 'wash' => $wash];
     }
 
     /**
@@ -383,6 +444,10 @@ class ClothesController extends Controller
             'originalImageUrl' => $this->storage->out($i->original_image_url),
             'normalizedUrl'    => $this->storage->out($i->normalized_url),
             'isWhite'          => !empty($i->normalized_url) && (string) $i->image_url === (string) $i->normalized_url,
+            // 自动洗白底（2026-09）：状态（''/queued/running/done/failed/skipped）+ 这件自己的自动勾选 + 用户选过哪张当封面
+            'normalizeStatus'  => (string) $i->normalize_status,
+            'normalizeAuto'    => (bool) $i->normalize_auto,
+            'coverChoice'      => (string) $i->cover_choice,
             // 这张图存在哪：oss = 对象存储，local = 服务器本地盘（小程序格子右下角挂牌用）
             'imageStorage' => $this->storage->driverOf($i->image_url),
             'createdAt' => (int) $i->client_created_at,
