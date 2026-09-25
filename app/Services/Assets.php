@@ -52,6 +52,8 @@ class Assets
         'empty.outfit'   => '',
         'empty.calendar' => '',
         'about.hero'     => '',
+        // 衣橱页顶部「N 件衣物」那一栏右侧的小插画（横向，约 2.1:1）
+        'wardrobe.header' => '',
     ];
 
     /**

@@ -19,11 +19,12 @@ class ClothesItem extends Model
 
     protected $fillable = [
         'user_id', 'client_id', 'name', 'category', 'sub',
-        'colors', 'seasons', 'occasions', 'image_url', 'client_created_at',
+        'details', 'colors', 'seasons', 'occasions', 'image_url', 'client_created_at',
         'original_image_url', 'normalized_url', 'normalized_source',
     ];
 
     protected $casts = [
+        'details' => 'array',
         'colors'    => 'array',
         'seasons'   => 'array',
         'occasions' => 'array',

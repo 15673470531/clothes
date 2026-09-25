@@ -80,6 +80,11 @@ class ClothesController extends Controller
         $data = $request->validate([
             'items'             => 'array',
             'items.*.id'        => 'required|string|max:32',
+            'items.*.details' => 'sometimes|array:size,brand,price,notes',
+            'items.*.details.size' => 'nullable|string|max:24',
+            'items.*.details.brand' => 'nullable|string|max:64',
+            'items.*.details.price' => ['nullable', 'regex:/^(0|[1-9]\d{0,6})(\.\d{1,2})?$/'],
+            'items.*.details.notes' => 'nullable|string|max:500',
             'items.*.name'      => 'nullable|string|max:64',
             'items.*.category'  => 'nullable|string|max:16',
             'items.*.sub'       => 'nullable|string|max:24',
@@ -223,6 +228,10 @@ class ClothesController extends Controller
     private function upsertItem(int $uid, array $row): array
     {
         $item = ClothesItem::withTrashed()->firstOrNew(['user_id' => $uid, 'client_id' => $row['id']]);
+        // 老版本不传 details 时保留；显式传空对象则清空选填属性。
+        if (array_key_exists('details', $row)) {
+            $item->details = $row['details'];
+        }
         $oldUrl = (string) $item->image_url;
         $newUrl = (string) ($row['imageUrl'] ?? '');
 
@@ -366,6 +375,7 @@ class ClothesController extends Controller
             'category'  => (string) $i->category,
             'sub'       => (string) $i->sub,
             'colors'    => $i->colors ?: [],
+            'details'   => $i->details ?: (object) [],
             'seasons'   => $i->seasons ?: [],
             'occasions' => $i->occasions ?: [],
             'imageUrl'  => $this->storage->out($i->image_url),
