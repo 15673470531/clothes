@@ -37,6 +37,8 @@ Route::get('assets', [AssetsController::class, 'index']);
 
 // 以下接口需要 Bearer Token
 Route::middleware('auth:sanctum')->group(function () {
+    Route::post('usage/events', [\App\Http\Controllers\Api\UsageController::class, 'collect'])->middleware('throttle:60,1');
+    Route::get('admin/usage', [\App\Http\Controllers\Api\UsageController::class, 'report']);
 
     // 用户信息
     Route::get('user/info',         [UserController::class, 'info']);

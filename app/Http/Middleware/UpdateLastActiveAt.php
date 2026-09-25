@@ -19,6 +19,8 @@ class UpdateLastActiveAt
     {
         $response = $next($request);
 
+        if ($request->is('api/usage/events')) return $response;
+
         if ($user = $request->user()) {
             if (Schema::hasColumn('users', 'last_active_at')) {
                 $user->timestamps = false; // 不更新 updated_at
