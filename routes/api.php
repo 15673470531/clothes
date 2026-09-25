@@ -35,8 +35,15 @@ Route::get('texts', [TextsController::class, 'index']);
 Route::get('assets', [AssetsController::class, 'index']);
 
 
+Route::get('personal-tryon/media/{kind}/{id}', [\App\Http\Controllers\Api\PersonalTryonController::class, 'media'])->middleware('signed')->name('personal-tryon.media');
+
 // 以下接口需要 Bearer Token
 Route::middleware('auth:sanctum')->group(function () {
+    Route::get('personal-tryon', [\App\Http\Controllers\Api\PersonalTryonController::class,'index']);
+    Route::post('personal-tryon/portraits', [\App\Http\Controllers\Api\PersonalTryonController::class,'upload'])->middleware('throttle:10,1');
+    Route::post('personal-tryon/tasks', [\App\Http\Controllers\Api\PersonalTryonController::class,'create'])->middleware('throttle:10,1');
+    Route::delete('personal-tryon/{kind}/{id}', [\App\Http\Controllers\Api\PersonalTryonController::class,'delete']);
+
     Route::post('usage/events', [\App\Http\Controllers\Api\UsageController::class, 'collect'])->middleware('throttle:60,1');
     Route::get('admin/usage', [\App\Http\Controllers\Api\UsageController::class, 'report']);
 

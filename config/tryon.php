@@ -18,6 +18,11 @@ return [
     */
 
     // 总开关：先发代码不生效，配好 key + 模特图再打开（避免线上误触发花钱的调用）
+    // 个人试穿单独灰度，不恢复旧固定模特入口。
+    'personal_enabled' => env('PERSONAL_TRYON_ENABLED', false),
+    'personal_test_users' => array_filter(explode(',', env('PERSONAL_TRYON_TEST_USERS', ''))),
+    'personal_daily_limit' => (int) env('PERSONAL_TRYON_DAILY_LIMIT', 3),
+
     'enabled' => env('TRYON_ENABLED', false),
 
     // 阿里云百炼（通义万相）的 API Key
