@@ -58,7 +58,7 @@ return [
     'reward_checkin' => env('QUOTA_REWARD_CHECKIN', 1),
 
     // 分享给群或者好友送几个（2026-09 用户定：2）
-    'reward_share' => env('QUOTA_REWARD_SHARE', 2),
+    'reward_share' => env('QUOTA_REWARD_SHARE', 5),
 
     // 每种奖励每天最多领几次
     'reward_checkin_daily' => env('QUOTA_REWARD_CHECKIN_DAILY', 1),
