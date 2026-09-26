@@ -246,6 +246,12 @@ class Texts
 
         // ---- 管理端下钻（pages/admin/*）----
         'admin.no_photo'   => '这件没有照片',
+        // 管理端看某人衣物：原图对比（2026-09 用户要的）
+        'admin.orig_badge' => '原图',
+        'admin.cmp_title'  => '{name} · 原图对比',
+        'admin.cmp_orig'   => '原图',
+        'admin.cmp_white'  => '白底图',
+        'admin.cmp_hint'   => '只读：左边是原图，右边是自动生成的白底图',
         'admin.no_cover'   => '这套还没出图',
         'admin.load_fail'  => '加载失败',
     ];
