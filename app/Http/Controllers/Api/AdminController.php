@@ -267,6 +267,12 @@ class AdminController extends Controller
                 'imageUrl'     => $storage->out($i->image_url),
                 // 照片存在哪（oss / local）：跟衣橱格子右下角那颗小圆点同一套口径
                 'imageStorage' => $storage->driverOf($i->image_url),
+                // 洗白底（2026-09 用户要的）：管理端也要能看到「她自己拍的原图」——
+                // 封面被自动换成白底图之后，只看 imageUrl 就再也看不到原始照片了
+                'originalImageUrl' => $storage->out($i->original_image_url),
+                'normalizedUrl'    => $storage->out($i->normalized_url),
+                // 现在展示的是不是白底图：前端据此决定要不要挂「原图」角标（点开只读对比层）
+                'isWhite'          => !empty($i->normalized_url) && (string) $i->image_url === (string) $i->normalized_url,
                 'createdAt'    => $this->listDate($i->client_created_at, $i->created_at),
             ])->values(),
             'total'       => $items->total(),

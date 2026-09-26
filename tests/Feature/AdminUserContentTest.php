@@ -109,6 +109,44 @@ class AdminUserContentTest extends TestCase
     }
 
     /**
+     * 场景：这件衣物的封面已经被自动洗成白底图（normalized_url == image_url），原图另存一份
+     * 预期：出参带上原图地址 + 白底图地址 + isWhite=true —— 管理端据此挂「原图」角标、点开对比
+     */
+    public function test_item_payload_keeps_original_photo_after_white_wash(): void
+    {
+        $this->actingAsAdmin();
+        $u = User::factory()->create(['is_admin' => false]);
+        $this->makeItem($u, 'i1', [
+            'image_url'          => 'https://example.com/storage/clothes/202609/white.jpg',
+            'normalized_url'     => 'https://example.com/storage/clothes/202609/white.jpg',
+            'original_image_url' => 'https://example.com/storage/clothes/202609/orig.jpg',
+        ]);
+
+        $row = $this->getJson('/api/admin/users/' . $u->id . '/items')->json('data.list.0');
+
+        $this->assertTrue($row['isWhite'], '封面是白底图 → isWhite=true（前端才会挂角标）');
+        $this->assertStringContainsString('orig.jpg', $row['originalImageUrl'], '原图地址要给出');
+        $this->assertStringContainsString('white.jpg', $row['normalizedUrl']);
+    }
+
+    /**
+     * 场景：没洗过白底的衣物（白底图 / 原图两列都空）
+     * 预期：isWhite=false、两个地址都是空串 —— 前端不挂角标，也不弹对比层
+     */
+    public function test_item_payload_without_white_wash_has_no_compare(): void
+    {
+        $this->actingAsAdmin();
+        $u = User::factory()->create(['is_admin' => false]);
+        $this->makeItem($u, 'i1', ['image_url' => 'https://example.com/storage/clothes/202609/a.jpg']);
+
+        $row = $this->getJson('/api/admin/users/' . $u->id . '/items')->json('data.list.0');
+
+        $this->assertFalse($row['isWhite']);
+        $this->assertSame('', $row['originalImageUrl'], '没洗过就没有原图可分');
+        $this->assertSame('', $row['normalizedUrl']);
+    }
+
+    /**
      * 场景：搭配引用了 3 件衣物，其中 1 件已经被删掉
      * 预期：count=2、missing=1；没封面时给第一件还在的衣物当缩略（不留空白格子）
      */
