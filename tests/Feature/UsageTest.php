@@ -16,6 +16,18 @@ class UsageTest extends TestCase
             'sequence'=>$sequence, 'occurred_at'=>now()->getTimestampMs() - 10000 + $sequence];
     }
 
+    public function test_recommendation_events_are_reported_without_private_fields(): void {
+        Sanctum::actingAs(User::factory()->create(['is_admin'=>false]));
+        $events=[];
+        foreach (['recommend_start','recommend_result','recommend_insufficient','recommend_swap','recommend_save','recommend_calendar'] as $i=>$name) {
+            $events[]=array_merge($this->event($name,$i+1),['page'=>'recommend','count'=>1,'itemIds'=>['private-id']]);
+        }
+        $this->postJson('/api/usage/events',['events'=>$events])->assertOk();
+        Sanctum::actingAs(User::factory()->create(['is_admin'=>true]));
+        $this->getJson('/api/admin/usage')->assertOk()->assertJsonCount(6,'data.recommendation')->assertJsonPath('data.recommendation.4.count',1);
+        $this->assertStringNotContainsString('private-id',json_encode(DB::table('usage_events')->get()));
+    }
+
     public function test_collection_is_authenticated_idempotent_and_minimal(): void {
         $e=$this->event('session_start',1);
         $this->postJson('/api/usage/events',['events'=>[$e]])->assertUnauthorized();

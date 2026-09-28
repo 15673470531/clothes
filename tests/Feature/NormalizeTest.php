@@ -444,6 +444,30 @@ class NormalizeTest extends TestCase
     }
 
     /**
+     * 老版本小程序提交新衣物时**压根不发** normalizeAuto 这个键
+     * 预期：新记录默认就是"不自动洗"（2026-09-26 起列默认 false）→ 不入队、不花钱
+     */
+    public function test_new_item_without_the_flag_is_not_queued(): void
+    {
+        Queue::fake();
+        $this->userWithItem();
+
+        $this->postJson('/api/clothes/sync', ['items' => [[
+            'id'               => 'i4',
+            'name'             => '旧客户端记的',
+            'category'         => 'top',
+            'imageUrl'         => 'https://cdn.example.com/clothes/4.jpg',
+            'originalImageUrl' => 'https://cdn.example.com/clothes/4.jpg',
+            'createdAt'        => 1758000003000,
+        ]]])->assertOk()->assertJsonPath('data.normalizeQueued', 0);
+
+        Queue::assertNotPushed(RunNormalize::class);
+
+        $row = \App\Models\ClothesItem::where('client_id', 'i4')->first();
+        $this->assertFalse((bool) $row->normalize_auto, '新记录默认「不自动洗」');
+    }
+
+    /**
      * 只改名字 / 分类（照片没换）→ 不入队
      *
      * 这条守的是钱：编辑已有衣物不该触发重洗（一张 0.2 元）。

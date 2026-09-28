@@ -284,8 +284,18 @@ class ClothesController extends Controller
             'seasons'           => $this->strList($row['seasons'] ?? [], 8),
             'occasions'         => $this->strList($row['occasions'] ?? [], 8),
             'image_url'         => $newUrl,
-            'client_created_at' => (int) ($row['createdAt'] ?? 0),
+            // 录入时间**不在这里写**：见下面那段（请求带 0 时不能覆盖）
         ]);
+
+        // 录入时间（2026-09-26 修的 bug）：列表是按 client_created_at 倒序排的，
+        // 而"编辑已有衣物"的 payload 里本来不带 createdAt（走的是 toCloudItem 的兜底），
+        // 以前这里无条件写 `(int) ($row['createdAt'] ?? 0)` → 编辑一次就把它冲成 0，
+        // 那件衣物直接掉到列表最后（用户实测反馈："我把最新的重新编辑后，又不在第一位了"）。
+        // 现在：只有请求带了**有效**时间才写；新记录没带就保持列默认 0。
+        $clientCreatedAt = (int) ($row['createdAt'] ?? 0);
+        if ($clientCreatedAt > 0) {
+            $item->client_created_at = $clientCreatedAt;
+        }
         // 之前被删过又被推上来的，算复活（用户在多端操作时可能出现）
         $item->deleted_at = null;
 
@@ -363,8 +373,13 @@ class ClothesController extends Controller
             'item_ids'          => $this->strList($row['itemIds'] ?? [], 30),
             'slots'             => $slots,
             'cover_url'         => $newUrl,
-            'client_created_at' => (int) ($row['createdAt'] ?? 0),
         ]);
+
+        // 录入时间同衣物那条口径：请求带 0 / 不带就**不覆盖**（搭配列表也按它倒序）
+        $outfitCreatedAt = (int) ($row['createdAt'] ?? 0);
+        if ($outfitCreatedAt > 0) {
+            $outfit->client_created_at = $outfitCreatedAt;
+        }
         $outfit->deleted_at = null;
         $outfit->save();
 
