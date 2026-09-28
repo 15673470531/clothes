@@ -137,6 +137,9 @@ class Texts
         'itemEdit.normalize_auto_off'     => '已关闭 · 需要时在这里手动生成',
         'itemEdit.normalize_auto_note'    => '保存后自动生成白底图，好了自动换成封面；原图一直留着，随时能切回。每天最多 {n} 张，生成失败不扣次数。',
         'itemEdit.normalize_auto_note_short' => '保存后自动生成白底图并换成封面，原图一直留着。',
+        // 关着时的说明（2026-09-26 默认改成"关"之后必须有这一套，不然关着还说"保存后自动生成"）
+        'itemEdit.normalize_auto_note_off'   => '关着就不会自动洗；想洗时点下面那行手动生成一次，每天最多 {n} 张。',
+        'itemEdit.normalize_auto_note_off_short' => '关着就不会自动洗；想洗时点下面那行手动生成一次。',
         'itemEdit.normalize_state_queued'  => '白底图排队中，马上开始',
         'itemEdit.normalize_state_running' => '白底图正在生成…',
         'itemEdit.normalize_state_done'    => '白底图已生成 · 点这里看/换封面',

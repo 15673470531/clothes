@@ -9,6 +9,9 @@ use Illuminate\Validation\Rule;
 class UsageController extends Controller
 {
     public const LABELS = [
+        'recommend_start' => '开始推荐穿搭', 'recommend_result' => '推荐成功',
+        'recommend_insufficient' => '推荐衣物不足', 'recommend_swap' => '替换推荐单品',
+        'recommend_save' => '保存推荐搭配', 'recommend_calendar' => '推荐安排到日历',
         'session_start' => '已登录访问', 'login_success' => '登录成功',
         'wardrobe_empty' => '查看空衣橱', 'add_click' => '点击添加衣物',
         'photo_start' => '打开照片选择', 'photo_success' => '选好照片',
@@ -26,7 +29,7 @@ class UsageController extends Controller
             'events.*.event_id' => 'required|string|regex:/^[a-zA-Z0-9_-]{1,64}$/',
             'events.*.session_id' => 'required|string|regex:/^[a-zA-Z0-9_-]{1,64}$/',
             'events.*.name' => ['required', Rule::in(array_keys(self::LABELS))],
-            'events.*.page' => ['required', Rule::in(['app', 'mine', 'wardrobe', 'item-edit'])],
+            'events.*.page' => ['required', Rule::in(['app', 'mine', 'wardrobe', 'item-edit', 'recommend'])],
             'events.*.source' => ['sometimes', Rule::in(['', 'fab', 'empty', 'camera', 'album', 'single', 'batch', 'next'])],
             'events.*.result' => ['sometimes', Rule::in(['', 'photo', 'category', 'price', 'success', 'cancel', 'fail'])],
             'events.*.error_code' => 'sometimes|string|regex:/^[a-zA-Z0-9_-]{0,32}$/',
@@ -94,6 +97,7 @@ class UsageController extends Controller
             $previous=$n;
         }
         return response()->json(['code'=>0,'msg'=>'success','data'=>[
+            'recommendation'=>collect(['recommend_start','recommend_result','recommend_insufficient','recommend_swap','recommend_save','recommend_calendar'])->map(fn($name)=>['name'=>$name,'label'=>self::LABELS[$name],'count'=>$events->where('name',$name)->count()])->values(),
             'days'=>$days,'funnel'=>$funnel,'errors'=>array_values($errors),'visits'=>array_slice($visits,0,20),
             'sessions'=>count($visits),'loginUsers'=>count($logins),'truncated'=>$total>20000,
             'note'=>'按近'.$days.'天内同一会话依次完成步骤计数，不含管理员。起点包含已登录回访；空衣橱仅表示当时无衣物，并非一定是新用户。取消选图和最后停留步骤不等于退出原因；跨会话继续录入可能不计入完整漏斗。仅展示最近20次访问，每次最多100条。',
