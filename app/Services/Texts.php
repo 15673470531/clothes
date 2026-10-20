@@ -51,6 +51,7 @@ class Texts
         'common.know'             => '知道了',
         'common.ok'               => '好',
         'common.go_wardrobe'      => '去衣橱',
+        'common.need_login'       => '先登录微信再来',
 
         // ---- 宣传语（2026-09 用户要的：空态/关于页/分享都用这几句，改这里全站生效）----
         // slogan.main 是全站主口号；空态可以各自再给一句更贴场景的
@@ -161,6 +162,35 @@ class Texts
         'itemEdit.quota_total_fallback' => '衣架用完了，想继续挂可以联系客服。',
         'itemEdit.quota_daily_tail'    => '想今天继续挂，可以联系客服。',
 
+        // ---- 穿搭照识别（pages/scan-confirm，2026-10）----
+        // 拍一张全身穿搭照 → AI 认出身上有哪些衣物 → 用户逐件确认入库
+        'scan.entry'               => '拍穿搭照 · 一次认出多件',
+        'scan.loading'             => '识别中…',
+        'scan.title'               => '确认衣物',
+        'scan.total'               => '认出 {n} 件，逐件确认',
+        'scan.truncated'           => '这张图认出的比较多，先给你 {n} 件',
+        'scan.progress'            => '第 {i} / {n} 件',
+        'scan.none'                => '这张图没认出衣物，换张全身清楚的正面照试试',
+        'scan.fail'                => '识别没成功，稍后再试',
+        'scan.quota_title'         => '今天识别次数用完了',
+        'scan.quota_content'       => '每天识别次数有限，明天再来',
+        'scan.no_crop'             => '这件没裁出图，先不带照片存',
+        'scan.use_full'            => '换成整张穿搭照',
+        'scan.use_crop'            => '换回裁好的图',
+        'scan.use_full_btn'        => '用整张穿搭照',
+        'scan.skip'                => '不要这件',
+        'scan.skipped'             => '已跳过，点缩略图可以加回来',
+        'scan.next'                => '下一件',
+        'scan.save'                => '加入衣橱（{n} 件）',
+        'scan.none_left'           => '一件都没留，直接回衣橱',
+        'scan.saved'               => '已加入衣橱',
+        'scan.saved_many'          => '{n} 件已加入衣橱',
+        'scan.need_category'       => '第 {n} 件还没选品类',
+        'scan.wash_title'          => '顺便洗成白底图',
+        'scan.wash_sub'            => '每件占当天洗白底的次数，好了自动换封面',
+        'scan.save_fail_title'     => '没保存成功',
+        'scan.save_fail_content'   => '{msg}，刚确认的都还在，再点一次就行',
+
         // ---- 衣橱（pages/wardrobe）----
         'wardrobe.pending_title'        => '还有 {n} 张没录完',
         'wardrobe.pending_content'      => '继续录入上次选的照片，还是丢掉这几张重新选？',
@@ -246,6 +276,13 @@ class Texts
 
         // ---- 联系客服（pages/service）----
         'service.email_copied' => '邮箱已复制',
+
+        // ---- 公众号文章容器（pages/webview）----
+        'webview.bad_url'     => '链接不对，稍后再试',
+        'webview.copied'      => '链接已复制',
+        'webview.fail_title'  => '文章打不开',
+        'webview.fail_desc'   => '可能是文章被删了，或者这篇不属于已关联的公众号。可以复制链接，到微信里打开。',
+        'webview.copy_btn'    => '复制链接',
 
         // ---- 管理端下钻（pages/admin/*）----
         'admin.no_photo'   => '这件没有照片',

@@ -3,12 +3,14 @@
 use App\Http\Controllers\Api\FeedbackController;
 use App\Http\Controllers\Api\NormalizeController;
 use App\Http\Controllers\Api\AdminController;
+use App\Http\Controllers\Api\ScanController;
 use App\Http\Controllers\Api\TryonController;
 use App\Http\Controllers\Api\UploadController;
 use App\Http\Controllers\Api\UserController;
 use App\Http\Controllers\Api\ClothesController;
 use App\Http\Controllers\Api\HangerRewardController;
 use App\Http\Controllers\Api\TextsController;
+use App\Http\Controllers\Api\LinksController;
 use App\Http\Controllers\Api\AssetsController;
 use Illuminate\Support\Facades\Route;
 
@@ -33,6 +35,10 @@ Route::get('texts', [TextsController::class, 'index']);
 // 插画资源表（2026-09 用户要的）：空态/关于页的插画 URL，图片在 OSS 上（换图不发版）。
 // 同样**免登录** —— 还没登录、还没录东西时的空态插画也得显示
 Route::get('assets', [AssetsController::class, 'index']);
+
+// 链接表（2026-10）：「我的 → 反馈建议」跳的公众号文章等外链，后端下发（换链接不发版）。
+// 同样**免登录** —— 未登录也要能看到「反馈建议」菜单
+Route::get('links', [LinksController::class, 'index']);
 
 
 Route::get('personal-tryon/media/{kind}/{id}', [\App\Http\Controllers\Api\PersonalTryonController::class, 'media'])->middleware('signed')->name('personal-tryon.media');
@@ -64,6 +70,11 @@ Route::middleware('auth:sanctum')->group(function () {
     // 洗白底（归一化）：记录衣物页底部那个入口；**同步**接口，15~20 秒出图
     Route::get('items/normalize/status', [NormalizeController::class, 'status']);
     Route::post('items/normalize',       [NormalizeController::class, 'store']);
+
+    // 穿搭照识别（2026-10）：拍一张全身照 → 认出身上有哪些衣物 → 用户逐件确认后入库
+    // **同步**接口（10 秒左右）；只识别不落库——点「加入衣橱」才走下面的 clothes/sync
+    Route::get('items/recognize/status', [ScanController::class, 'status']);
+    Route::post('items/recognize',       [ScanController::class, 'recognize'])->middleware('throttle:10,1');
 
     // 衣物 / 搭配 / 日历 数据同步（二期第二步：数据上云，存 MySQL）
     // 只有两个接口：拉全量 + 批量推（小程序自己攒「待推队列」，弱网下一次推完）
