@@ -36,6 +36,9 @@ docker compose exec app php artisan migrate
 衣架额度规则见 [docs/衣架规则.md](docs/衣架规则.md)；小程序里所有提示语（toast/弹窗）
 由后端下发、改文案不用发版，见 [docs/文案.md](docs/文案.md)。
 
+「拍一张穿搭照认出身上有哪些衣物」见 [docs/穿搭照识别.md](docs/穿搭照识别.md)
+（用的是同一把 `DASHSCOPE_API_KEY`；识别**不落库、不扣衣架**，用户确认后才走 `/clothes/sync`）。
+
 ## 四、端口
 
 | 服务 | 端口 |
